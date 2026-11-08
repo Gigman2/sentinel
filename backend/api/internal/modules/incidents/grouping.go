@@ -2,6 +2,7 @@ package incidents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -9,33 +10,111 @@ import (
 	"github.com/Gigman2/sentinel/backend/api/internal/domain"
 )
 
-// ApplyAlertTriggered turns an accepted alert.triggered event into an
-// incident inside the caller's transaction: it opens the incident, links the
-// event as its trigger, and records the event's final disposition.
+// groupingAttempts bounds the insert-or-lock loop in ApplyAlertTriggered.
+const groupingAttempts = 3
+
+// errGroupingContention means the open incident for a key kept being
+// resolved between the insert and the lock; the caller's transaction fails.
+var errGroupingContention = errors.New("open incident changed concurrently on every attempt")
+
+func keyOf(ev domain.Event) groupingKey {
+	return groupingKey{
+		OrganizationID: ev.OrganizationID, ProjectID: ev.ProjectID, Environment: ev.Environment,
+		ComponentID: ev.ComponentID, Fingerprint: ev.Fingerprint,
+	}
+}
+
+// ApplyAlertTriggered groups an accepted alert.triggered event inside the
+// caller's transaction (READ COMMITTED). It opens a new incident for the
+// grouping key, or attaches the alert to the one already open, and records
+// the event's link and final disposition.
 //
-// This version only creates. Attaching repeat alerts to an open incident
-// (and the concurrency handling that needs) comes with the incident
-// lifecycle work (plan Task 6).
+// Opening relies on the uq_incidents_open_key partial unique index: the
+// insert does nothing if an incident is open, and the open incident is then
+// row-locked. If that incident is resolved between the two statements, the
+// lock finds nothing and the pair is retried (a resolved incident means the
+// alert opens a new one).
 func ApplyAlertTriggered(ctx context.Context, tx pgx.Tx, ev domain.Event) (incidentID string, created bool, err error) {
-	incidentID, err = insertIncident(ctx, tx, newIncident{
-		OrganizationID: ev.OrganizationID,
-		ProjectID:      ev.ProjectID,
-		ComponentID:    ev.ComponentID,
-		Environment:    ev.Environment,
-		Fingerprint:    ev.Fingerprint,
-		Severity:       ev.Severity,
-		Title:          ev.Summary,
-		TriggerEventID: ev.ID,
-		SeenAt:         ev.OccurredAt,
-	})
+	for range groupingAttempts {
+		id, inserted, err := insertOpenIncidentIfAbsent(ctx, tx, newIncident{
+			OrganizationID: ev.OrganizationID,
+			ProjectID:      ev.ProjectID,
+			ComponentID:    ev.ComponentID,
+			Environment:    ev.Environment,
+			Fingerprint:    ev.Fingerprint,
+			Severity:       ev.Severity,
+			Title:          ev.Summary,
+			TriggerEventID: ev.ID,
+			SeenAt:         ev.OccurredAt,
+			UpdatedAt:      ev.ReceivedAt,
+		})
+		if err != nil {
+			return "", false, fmt.Errorf("open incident: %w", err)
+		}
+		if inserted {
+			return id, true, record(ctx, tx, ev, id, domain.LinkTrigger, domain.DispositionIncidentCreated)
+		}
+
+		open, err := lockOpenIncident(ctx, tx, keyOf(ev))
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue // resolved concurrently; try to open a new one
+		}
+		if err != nil {
+			return "", false, fmt.Errorf("lock open incident: %w", err)
+		}
+		if err := attach(ctx, tx, open, ev); err != nil {
+			return "", false, err
+		}
+		return open.ID, false, record(ctx, tx, ev, open.ID, domain.LinkRepeatTrigger, domain.DispositionIncidentAttached)
+	}
+	return "", false, errGroupingContention
+}
+
+// attach widens an open incident for a repeat alert. last_seen_at only moves
+// forward, first_seen_at never changes, and severity only rises.
+func attach(ctx context.Context, tx pgx.Tx, open lockedIncident, ev domain.Event) error {
+	lastSeen := open.LastSeenAt
+	if ev.OccurredAt.After(lastSeen) {
+		lastSeen = ev.OccurredAt
+	}
+	severity := open.Severity
+	if domain.SeverityRank(ev.Severity) > domain.SeverityRank(severity) {
+		severity = ev.Severity
+	}
+	if err := updateIncidentSeen(ctx, tx, open.ID, lastSeen, severity, ev.ReceivedAt); err != nil {
+		return fmt.Errorf("attach to incident: %w", err)
+	}
+	return nil
+}
+
+// ApplyAlertResolved resolves the open incident with the event's grouping
+// key, inside the caller's transaction. matched=false means none was open;
+// the event is recorded as an unmatched resolution. A resolution that
+// occurred before the incident's last alert still resolves it (see the ADR).
+func ApplyAlertResolved(ctx context.Context, tx pgx.Tx, ev domain.Event) (incidentID string, matched bool, err error) {
+	open, err := lockOpenIncident(ctx, tx, keyOf(ev))
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err := setEventOutcome(ctx, tx, ev.ID, domain.DispositionUnmatchedResolution, nil); err != nil {
+			return "", false, fmt.Errorf("record event outcome: %w", err)
+		}
+		return "", false, nil
+	}
 	if err != nil {
-		return "", false, fmt.Errorf("open incident: %w", err)
+		return "", false, fmt.Errorf("lock open incident: %w", err)
 	}
-	if err := insertLink(ctx, tx, incidentID, ev.ID, domain.LinkTrigger, ev.ReceivedAt); err != nil {
-		return "", false, fmt.Errorf("link trigger: %w", err)
+	if err := markIncidentResolved(ctx, tx, open.ID, ev.OccurredAt, ResolutionAlert, nil, ev.ReceivedAt); err != nil {
+		return "", false, fmt.Errorf("resolve incident: %w", err)
 	}
-	if err := setEventOutcome(ctx, tx, ev.ID, domain.DispositionIncidentCreated, &incidentID); err != nil {
-		return "", false, fmt.Errorf("record event outcome: %w", err)
+	return open.ID, true, record(ctx, tx, ev, open.ID, domain.LinkResolution, domain.DispositionIncidentResolved)
+}
+
+// record links the event to the incident and stores the event's outcome.
+func record(ctx context.Context, tx pgx.Tx, ev domain.Event, incidentID, reason, disposition string) error {
+	if err := insertLink(ctx, tx, incidentID, ev.ID, reason, ev.ReceivedAt); err != nil {
+		return fmt.Errorf("link %s: %w", reason, err)
 	}
-	return incidentID, true, nil
+	if err := setEventOutcome(ctx, tx, ev.ID, disposition, &incidentID); err != nil {
+		return fmt.Errorf("record event outcome: %w", err)
+	}
+	return nil
 }

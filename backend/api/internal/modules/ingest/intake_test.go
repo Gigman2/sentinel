@@ -269,11 +269,7 @@ func TestRateLimited(t *testing.T) {
 	path := ingestPath(s.MonitorIntegrationID)
 
 	for i, want := range []int{201, 201, 429} {
-		// Distinct fingerprints: each alert opens its own incident, so this
-		// test exercises only the limiter (repeat alerts attach from Task 6).
-		body := alert("alert-rl-" + string(rune('a'+i)))
-		body["fingerprint"] = "rl-" + string(rune('a'+i))
-		w := testutil.PostJSON(t, h, path, s.MonitorToken, body)
+		w := testutil.PostJSON(t, h, path, s.MonitorToken, alert("alert-rl-"+string(rune('a'+i))))
 		if w.Code != want {
 			t.Fatalf("request %d: %d %s", i+1, w.Code, w.Body)
 		}
