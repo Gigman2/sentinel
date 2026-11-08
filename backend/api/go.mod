@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/pressly/goose/v3 v3.29.0
+	golang.org/x/time v0.16.0
 )
 
 require (
