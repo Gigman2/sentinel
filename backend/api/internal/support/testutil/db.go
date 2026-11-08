@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/Gigman2/sentinel/backend/api/internal/db"
+	"github.com/Gigman2/sentinel/backend/api/internal/platform/database"
 )
 
 // EnvVar names the admin connection string tests use to create databases,
@@ -56,11 +56,11 @@ func NewDB(t *testing.T) *pgxpool.Pool {
 	})
 
 	dsn := withDatabase(t, adminDSN, name)
-	if err := db.Migrate(ctx, dsn); err != nil {
+	if err := database.Migrate(ctx, dsn); err != nil {
 		t.Fatalf("migrate test database: %v", err)
 	}
 
-	pool, err := db.Open(ctx, dsn)
+	pool, err := database.Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open test database: %v", err)
 	}

@@ -1,4 +1,4 @@
-package db_test
+package database_test
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/Gigman2/sentinel/backend/api/internal/db"
-	"github.com/Gigman2/sentinel/backend/api/internal/testutil"
+	"github.com/Gigman2/sentinel/backend/api/internal/platform/database"
+	"github.com/Gigman2/sentinel/backend/api/internal/support/testutil"
 )
 
 func TestMigrate_CreatesTenancyTables(t *testing.T) {
@@ -57,10 +57,10 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	pool := testutil.NewDB(t)
 	dsn := pool.Config().ConnString()
-	if err := db.Migrate(ctx, dsn); err != nil {
+	if err := database.Migrate(ctx, dsn); err != nil {
 		t.Fatalf("first re-run: %v", err)
 	}
-	if err := db.Migrate(ctx, dsn); err != nil {
+	if err := database.Migrate(ctx, dsn); err != nil {
 		t.Fatalf("second re-run: %v", err)
 	}
 }

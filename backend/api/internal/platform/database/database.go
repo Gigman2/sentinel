@@ -1,16 +1,32 @@
-// Package db opens PostgreSQL connections and applies schema migrations.
-package db
+// Package database opens PostgreSQL connections and applies schema migrations.
+package database
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 	"github.com/pressly/goose/v3"
 
 	"github.com/Gigman2/sentinel/backend/api/migrations"
+)
+
+// DBTX is what store functions accept: satisfied by *pgxpool.Pool, *pgxpool.Conn
+// and pgx.Tx, so the caller (a service) decides whether a query runs inside a
+// transaction.
+type DBTX interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+var (
+	_ DBTX = (*pgxpool.Pool)(nil)
+	_ DBTX = (pgx.Tx)(nil)
 )
 
 // Open connects a pool to dsn and verifies the connection.
