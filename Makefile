@@ -1,4 +1,4 @@
-.PHONY: db down test test-api test-worker
+.PHONY: db down run test test-api test-worker
 
 TEST_DATABASE_URL ?= postgres://sentinel:sentinel@localhost:5432/postgres?sslmode=disable
 
@@ -9,6 +9,10 @@ db:
 ## down: stop the local stack (keeps the database volume)
 down:
 	docker compose down
+
+## run: start PostgreSQL, migrate, seed, then run the API and worker (Ctrl-C stops them)
+run:
+	./scripts/run-local.sh
 
 ## test-api: run the Go API's vet and tests against local PostgreSQL
 test-api: db
