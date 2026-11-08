@@ -149,6 +149,11 @@ func (s Service) Accept(ctx context.Context, in Integration, e Envelope) (Result
 			result.Disposition, result.IncidentID = domain.DispositionIncidentResolved, &incidentID
 		}
 	default:
+		// Evidence never opens an incident; it is linked to every incident
+		// whose window contains it. (Reanalysis of those incidents: Task 8.)
+		if _, err := incidents.LinkEvidenceEvent(ctx, tx, ev); err != nil {
+			return Result{}, err
+		}
 		result.Disposition = initialDisposition(ev.Type)
 	}
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -201,7 +202,7 @@ type Page struct {
 // List returns a page of a project's incidents, newest last_seen_at first.
 // The raw query values are checked in this order: project visible to orgID
 // (ErrProjectNotFound), then status, limit and cursor (each an *httpx.Error).
-func (s Service) List(ctx context.Context, orgID, projectID, status, limit, cursor string) (Page, error) {
+func (s Service) List(ctx context.Context, orgID, projectID, status, limit, rawCursor string) (Page, error) {
 	if err := tenancy.ProjectInOrg(ctx, s.Pool, orgID, projectID); err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			return Page{}, ErrProjectNotFound
@@ -211,21 +212,13 @@ func (s Service) List(ctx context.Context, orgID, projectID, status, limit, curs
 	if status != "" && status != domain.IncidentOpen && status != domain.IncidentResolved {
 		return Page{}, badRequest("invalid_status", "status must be open or resolved")
 	}
-	n := DefaultListLimit
-	if limit != "" {
-		v, err := strconv.Atoi(limit)
-		if err != nil || v < 1 || v > MaxListLimit {
-			return Page{}, badRequest("invalid_limit", "limit must be an integer from 1 to 100")
-		}
-		n = v
+	n, rej := parseLimit(limit, DefaultListLimit, MaxListLimit)
+	if rej != nil {
+		return Page{}, rej
 	}
-	var after *listCursor
-	if cursor != "" {
-		c, ok := decodeCursor(cursor)
-		if !ok {
-			return Page{}, badRequest("invalid_cursor", "cursor is not a value returned as next_cursor")
-		}
-		after = &c
+	after, rej := parseCursor(rawCursor)
+	if rej != nil {
+		return Page{}, rej
 	}
 
 	rows, err := listIncidents(ctx, s.Pool, orgID, projectID, status, after, n+1)
@@ -236,7 +229,7 @@ func (s Service) List(ctx context.Context, orgID, projectID, status, limit, curs
 	for i, r := range rows {
 		if i == n {
 			last := rows[n-1]
-			next := encodeCursor(listCursor{LastSeenAt: last.LastSeenAt, ID: last.ID})
+			next := encodeCursor(cursor{At: last.LastSeenAt, ID: last.ID})
 			page.NextCursor = &next
 			break
 		}
@@ -249,27 +242,51 @@ func (s Service) List(ctx context.Context, orgID, projectID, status, limit, curs
 	return page, nil
 }
 
+// parseLimit reads a page size: def when raw is empty, else an integer in [1, max].
+func parseLimit(raw string, def, max int) (int, *httpx.Error) {
+	if raw == "" {
+		return def, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 1 || v > max {
+		return 0, badRequest("invalid_limit", fmt.Sprintf("limit must be an integer from 1 to %d", max))
+	}
+	return v, nil
+}
+
+// parseCursor reads an optional next_cursor value.
+func parseCursor(raw string) (*cursor, *httpx.Error) {
+	if raw == "" {
+		return nil, nil
+	}
+	c, ok := decodeCursor(raw)
+	if !ok {
+		return nil, badRequest("invalid_cursor", "cursor is not a value returned as next_cursor")
+	}
+	return &c, nil
+}
+
 func badRequest(code, message string) *httpx.Error {
 	return &httpx.Error{Status: http.StatusBadRequest, Code: code, Message: message}
 }
 
-// A cursor is base64url (unpadded) of "<RFC 3339 nano last_seen_at>|<id>".
-func encodeCursor(c listCursor) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(c.LastSeenAt.UTC().Format(time.RFC3339Nano) + "|" + c.ID))
+// A cursor is base64url (unpadded) of "<RFC 3339 nano time>|<uuid>".
+func encodeCursor(c cursor) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(c.At.UTC().Format(time.RFC3339Nano) + "|" + c.ID))
 }
 
-func decodeCursor(s string) (listCursor, bool) {
+func decodeCursor(s string) (cursor, bool) {
 	raw, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
-		return listCursor{}, false
+		return cursor{}, false
 	}
 	at, id, ok := strings.Cut(string(raw), "|")
 	if !ok || !httpx.IsUUID(id) {
-		return listCursor{}, false
+		return cursor{}, false
 	}
 	t, err := time.Parse(time.RFC3339Nano, at)
 	if err != nil {
-		return listCursor{}, false
+		return cursor{}, false
 	}
-	return listCursor{LastSeenAt: t, ID: id}, true
+	return cursor{At: t, ID: id}, true
 }

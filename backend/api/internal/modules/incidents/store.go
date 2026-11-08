@@ -88,13 +88,61 @@ func incidentStatusInOrgForUpdate(ctx context.Context, q database.DBTX, orgID, i
 	return status, err
 }
 
-func insertLink(ctx context.Context, q database.DBTX, incidentID, eventID, reason string, linkedAt time.Time) error {
-	_, err := q.Exec(ctx, `
+// insertLink links an event to an incident. inserted=false means it was already linked.
+func insertLink(ctx context.Context, q database.DBTX, incidentID, eventID, reason string, linkedAt time.Time) (inserted bool, err error) {
+	tag, err := q.Exec(ctx, `
 		INSERT INTO incident_events (incident_id, event_id, reason, linked_at)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (incident_id, event_id) DO NOTHING`,
 		incidentID, eventID, reason, linkedAt)
+	return tag.RowsAffected() == 1, err
+}
+
+// lockComponent takes a transaction-scoped advisory lock on a key string.
+func lockComponent(ctx context.Context, q database.DBTX, key string) error {
+	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key)
 	return err
+}
+
+// incidentSpan returns an incident's first and last alert times.
+func incidentSpan(ctx context.Context, q database.DBTX, incidentID string) (first, last time.Time, err error) {
+	err = q.QueryRow(ctx, `SELECT first_seen_at, last_seen_at FROM incidents WHERE id = $1`, incidentID).Scan(&first, &last)
+	return first, last, err
+}
+
+// linkStoredEvidence links every stored deployment.completed and
+// error.observed event on the incident's org, project, environment and
+// component with occurred_at in [start, end] that is not linked yet.
+func linkStoredEvidence(ctx context.Context, q database.DBTX, incidentID string, start, end, linkedAt time.Time) (int64, error) {
+	tag, err := q.Exec(ctx, `
+		INSERT INTO incident_events (incident_id, event_id, reason, linked_at)
+		SELECT i.id, e.id, $4, $5
+		FROM incidents i
+		JOIN operational_events e
+		  ON e.organization_id = i.organization_id AND e.project_id = i.project_id
+		 AND e.environment = i.environment AND e.component_id = i.component_id
+		WHERE i.id = $1
+		  AND e.type IN ($6, $7)
+		  AND e.occurred_at BETWEEN $2 AND $3
+		ON CONFLICT (incident_id, event_id) DO NOTHING`,
+		incidentID, start, end, domain.LinkSameComponentTimeWindow, linkedAt,
+		domain.EventDeploymentCompleted, domain.EventErrorObserved)
+	return tag.RowsAffected(), err
+}
+
+// incidentsSpanning returns the IDs (ascending) of incidents of any status
+// on a component whose first_seen_at <= firstSeenBy and last_seen_at >= lastSeenFrom.
+func incidentsSpanning(ctx context.Context, q database.DBTX, ev domain.Event, firstSeenBy, lastSeenFrom time.Time) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id::text FROM incidents
+		WHERE organization_id = $1 AND project_id = $2 AND environment = $3 AND component_id = $4
+		  AND first_seen_at <= $5 AND last_seen_at >= $6
+		ORDER BY id`,
+		ev.OrganizationID, ev.ProjectID, ev.Environment, ev.ComponentID, firstSeenBy, lastSeenFrom)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
 func setEventOutcome(ctx context.Context, q database.DBTX, eventID, disposition string, incidentID *string) error {
@@ -129,10 +177,10 @@ func incidentInOrg(ctx context.Context, q database.DBTX, orgID, incidentID strin
 	return r, err
 }
 
-// listCursor is the position after which a page of incidents starts.
-type listCursor struct {
-	LastSeenAt time.Time
-	ID         string
+// cursor is the position after which a page starts: a timestamp and an ID.
+type cursor struct {
+	At time.Time
+	ID string
 }
 
 // listRow is one incident in a project listing.
@@ -145,11 +193,11 @@ type listRow struct {
 // listIncidents returns up to limit incidents in a project, newest
 // last_seen_at first (ties by id descending), after the cursor if given.
 // An empty status matches every status.
-func listIncidents(ctx context.Context, q database.DBTX, orgID, projectID, status string, after *listCursor, limit int) ([]listRow, error) {
+func listIncidents(ctx context.Context, q database.DBTX, orgID, projectID, status string, after *cursor, limit int) ([]listRow, error) {
 	var afterAt *time.Time
 	var afterID *string
 	if after != nil {
-		afterAt, afterID = &after.LastSeenAt, &after.ID
+		afterAt, afterID = &after.At, &after.ID
 	}
 	rows, err := q.Query(ctx, `
 		SELECT i.id::text, i.status, i.severity, i.title, i.environment, c.slug, c.display_name,
@@ -168,6 +216,42 @@ func listIncidents(ctx context.Context, q database.DBTX, orgID, projectID, statu
 		var r listRow
 		err := row.Scan(&r.ID, &r.Status, &r.Severity, &r.Title, &r.Environment, &r.ComponentSlug, &r.ComponentName,
 			&r.FirstSeenAt, &r.LastSeenAt)
+		return r, err
+	})
+}
+
+// timelineRow is one event linked to an incident.
+type timelineRow struct {
+	EventID, Type, Summary, LinkReason string
+	OccurredAt, ReceivedAt             time.Time
+	Severity, SourceURL                *string
+	Attributes, Details                map[string]any
+}
+
+// timelineEvents returns up to limit events linked to an incident, oldest
+// occurred_at first (ties by event id), after the cursor if given.
+func timelineEvents(ctx context.Context, q database.DBTX, incidentID string, after *cursor, limit int) ([]timelineRow, error) {
+	var afterAt *time.Time
+	var afterID *string
+	if after != nil {
+		afterAt, afterID = &after.At, &after.ID
+	}
+	rows, err := q.Query(ctx, `
+		SELECT e.id::text, e.type, e.summary, l.reason, e.occurred_at, e.received_at,
+		       e.severity, e.source_url, e.attributes, e.details
+		FROM incident_events l
+		JOIN operational_events e ON e.id = l.event_id
+		WHERE l.incident_id = $1
+		  AND ($2::timestamptz IS NULL OR (e.occurred_at, e.id) > ($2, $3::uuid))
+		ORDER BY e.occurred_at, e.id
+		LIMIT $4`, incidentID, afterAt, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (timelineRow, error) {
+		var r timelineRow
+		err := row.Scan(&r.EventID, &r.Type, &r.Summary, &r.LinkReason, &r.OccurredAt, &r.ReceivedAt,
+			&r.Severity, &r.SourceURL, &r.Attributes, &r.Details)
 		return r, err
 	})
 }

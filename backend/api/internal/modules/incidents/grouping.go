@@ -29,12 +29,19 @@ func keyOf(ev domain.Event) groupingKey {
 // grouping key, or attaches the alert to the one already open, and records
 // the event's link and final disposition.
 //
+// It first takes the component's advisory lock (see linking.go for the lock
+// order), and after creating or attaching links the stored evidence inside
+// the incident's window.
+//
 // Opening relies on the uq_incidents_open_key partial unique index: the
 // insert does nothing if an incident is open, and the open incident is then
 // row-locked. If that incident is resolved between the two statements, the
 // lock finds nothing and the pair is retried (a resolved incident means the
 // alert opens a new one).
 func ApplyAlertTriggered(ctx context.Context, tx pgx.Tx, ev domain.Event) (incidentID string, created bool, err error) {
+	if err := lockComponentWindow(ctx, tx, ev); err != nil {
+		return "", false, err
+	}
 	for range groupingAttempts {
 		id, inserted, err := insertOpenIncidentIfAbsent(ctx, tx, newIncident{
 			OrganizationID: ev.OrganizationID,
@@ -52,7 +59,7 @@ func ApplyAlertTriggered(ctx context.Context, tx pgx.Tx, ev domain.Event) (incid
 			return "", false, fmt.Errorf("open incident: %w", err)
 		}
 		if inserted {
-			return id, true, record(ctx, tx, ev, id, domain.LinkTrigger, domain.DispositionIncidentCreated)
+			return id, true, recordAndLinkWindow(ctx, tx, ev, id, domain.LinkTrigger, domain.DispositionIncidentCreated)
 		}
 
 		open, err := lockOpenIncident(ctx, tx, keyOf(ev))
@@ -65,7 +72,7 @@ func ApplyAlertTriggered(ctx context.Context, tx pgx.Tx, ev domain.Event) (incid
 		if err := attach(ctx, tx, open, ev); err != nil {
 			return "", false, err
 		}
-		return open.ID, false, record(ctx, tx, ev, open.ID, domain.LinkRepeatTrigger, domain.DispositionIncidentAttached)
+		return open.ID, false, recordAndLinkWindow(ctx, tx, ev, open.ID, domain.LinkRepeatTrigger, domain.DispositionIncidentAttached)
 	}
 	return "", false, errGroupingContention
 }
@@ -108,9 +115,19 @@ func ApplyAlertResolved(ctx context.Context, tx pgx.Tx, ev domain.Event) (incide
 	return open.ID, true, record(ctx, tx, ev, open.ID, domain.LinkResolution, domain.DispositionIncidentResolved)
 }
 
+// recordAndLinkWindow records the alert's link and outcome, then links the
+// stored evidence inside the incident's (possibly grown) window.
+func recordAndLinkWindow(ctx context.Context, tx pgx.Tx, ev domain.Event, incidentID, reason, disposition string) error {
+	if err := record(ctx, tx, ev, incidentID, reason, disposition); err != nil {
+		return err
+	}
+	_, err := LinkWindow(ctx, tx, incidentID, ev.ReceivedAt)
+	return err
+}
+
 // record links the event to the incident and stores the event's outcome.
 func record(ctx context.Context, tx pgx.Tx, ev domain.Event, incidentID, reason, disposition string) error {
-	if err := insertLink(ctx, tx, incidentID, ev.ID, reason, ev.ReceivedAt); err != nil {
+	if _, err := insertLink(ctx, tx, incidentID, ev.ID, reason, ev.ReceivedAt); err != nil {
 		return fmt.Errorf("link %s: %w", reason, err)
 	}
 	if err := setEventOutcome(ctx, tx, ev.ID, disposition, &incidentID); err != nil {

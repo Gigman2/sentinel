@@ -81,6 +81,28 @@ func (h Handlers) List(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Timeline handles GET /v1/incidents/{incidentId}/timeline.
+func (h Handlers) Timeline(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("incidentId")
+	if !httpx.IsUUID(id) {
+		writeNotFound(w, r)
+		return
+	}
+	q := r.URL.Query()
+	page, err := h.Service.Timeline(r.Context(), auth.PrincipalFrom(r.Context()).OrganizationID, id, q.Get("limit"), q.Get("cursor"))
+	var rej *httpx.Error
+	switch {
+	case errors.As(err, &rej):
+		httpx.WriteErr(w, r, rej)
+	case errors.Is(err, ErrNotFound):
+		writeNotFound(w, r)
+	case err != nil:
+		h.unavailable(w, r, "incident timeline", err)
+	default:
+		httpx.WriteJSON(w, http.StatusOK, page)
+	}
+}
+
 // maxBodyBytes bounds request bodies for incident endpoints.
 const maxBodyBytes = 64 << 10
 
