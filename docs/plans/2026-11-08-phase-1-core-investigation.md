@@ -37,6 +37,7 @@
 - Migrations live in `backend/api/migrations/NNNN_name.sql` in goose format with `-- +goose Up` / `-- +goose Down` sections and no `StatementBegin` blocks (the Python test harness executes each Up section as one string). Every table has `created_at timestamptz NOT NULL DEFAULT now()`.
 - Lock order, everywhere: per-component advisory lock → incident row lock → job rows. No code path takes them in another order.
 - New Go packages go in the `internal/` group that matches their role (`platform`, `domain`, `auth`, `modules`, `server`, `support`). `internal/archtest` enforces the allowed imports; see `backend/api/internal/README.md`.
+- Inside `auth/` and each module, HTTP lives in `handlers.go`, rules and transaction boundaries in `service.go` (or named rule files), and **all SQL in `store.go` / `store_*.go`** as small, specifically named functions taking a `database.DBTX`. Stores make no decisions; services interpret results. `internal/archtest` fails on SQL outside store files. No mock stores; tests use real PostgreSQL.
 - Go tests never call `t.Parallel()`.
 - No LLM, broker, Kubernetes, or cloud dependency in this phase.
 
@@ -71,11 +72,11 @@ backend/api/                                 module github.com/Gigman2/sentinel/
   internal/domain/domain.go                  shared constants (event types, statuses, link reasons, …)
   internal/auth/auth.go                      tokens, user principal middleware
   internal/modules/                          product features, one package each
-    tenancy/{store,handlers}.go              projects, components
-    integrations/{store,handlers}.go
-    ingest/{validate,service,handler,ratelimit}.go
-    incidents/{grouping,linking,store,handlers,timeline}.go
-    analysis/{jobs,store,handlers}.go
+    tenancy/{handlers,service,store}.go      projects, components
+    integrations/{handlers,service,store}.go
+    ingest/{handler,validate,service,store,ratelimit}.go
+    incidents/{handlers,grouping,linking,timeline,store}.go   grouping/linking/timeline are service logic
+    analysis/{handlers,jobs,store}.go          jobs.go is the service
   internal/server/server.go                  New(Deps) http.Handler: all routes
   internal/support/                          not product logic
     seed/seed.go                             idempotent tenant seeding (demo + tests)
@@ -172,7 +173,7 @@ integration_component_mappings(id, integration_id FK ON DELETE CASCADE, external
 ### Task 3: First vertical cut — alert to incident — PR `feat/p1-03-alert-to-incident`
 
 **Files:**
-- Create: `migrations/0002_events_incidents.sql`, `internal/modules/ingest/{validate,service,handler}.go`, `internal/modules/incidents/{grouping,store,handlers}.go`; modify `internal/server/server.go`
+- Create: `migrations/0002_events_incidents.sql`, `internal/modules/ingest/{handler,validate,service,store}.go`, `internal/modules/incidents/{handlers,grouping,store}.go`; modify `internal/server/server.go`
 - Test: `internal/modules/ingest/handler_test.go`, `internal/modules/incidents/handlers_test.go`, `internal/support/testutil/http.go` (shared test helpers: `PostJSON`, `GetJSON`, `Decode[T]`; no string-slicing JSON)
 
 Schema `0002`:
@@ -221,7 +222,7 @@ incident_events(incident_id FK, event_id FK, reason text NOT NULL, linked_at tim
 ### Task 4: Project, component and integration management — PR `feat/p1-04-management-api`
 
 **Files:**
-- Create: `internal/modules/tenancy/{store,handlers}.go`, `internal/modules/integrations/{store,handlers}.go`; modify `internal/server/server.go`, `internal/modules/ingest/handler.go`
+- Create: `internal/modules/tenancy/{handlers,service,store}.go`, `internal/modules/integrations/{handlers,service,store}.go`; modify `internal/server/server.go`, `internal/modules/ingest/handler.go`
 - Test: `internal/modules/tenancy/handlers_test.go`, `internal/modules/integrations/handlers_test.go`
 
 **Interfaces:**
@@ -261,7 +262,7 @@ incident_events(incident_id FK, event_id FK, reason text NOT NULL, linked_at tim
 ### Task 5: Complete intake — PR `feat/p1-05-intake`
 
 **Files:**
-- Create: `migrations/0003_intake_rejections.sql`, `internal/modules/ingest/ratelimit.go`; modify `internal/modules/ingest/{validate,service,handler}.go`
+- Create: `migrations/0003_intake_rejections.sql`, `internal/modules/ingest/ratelimit.go`; modify `internal/modules/ingest/{validate,service,store,handler}.go`
 - Test: `internal/modules/ingest/validate_test.go`, `internal/modules/ingest/handler_test.go`
 
 `intake_rejections(id, integration_id FK, organization_id, received_at, code text NOT NULL, source_event_id text, external_component_id text, environment text)`. It stores no payload.
@@ -349,7 +350,7 @@ incident_events(incident_id FK, event_id FK, reason text NOT NULL, linked_at tim
 ### Task 7: Evidence window linking and timeline — PR `feat/p1-07-evidence-timeline`
 
 **Files:**
-- Create: `internal/modules/incidents/linking.go`, `internal/modules/incidents/timeline.go`; modify `internal/modules/incidents/grouping.go`, `internal/modules/ingest/service.go`, `internal/server/server.go`
+- Create: `internal/modules/incidents/linking.go`, `internal/modules/incidents/timeline.go`; modify `internal/modules/incidents/{grouping,store,handlers}.go`, `internal/modules/ingest/service.go`, `internal/server/server.go`
 - Test: `internal/modules/incidents/linking_test.go`, `internal/modules/incidents/timeline_test.go`
 
 **Interfaces:**

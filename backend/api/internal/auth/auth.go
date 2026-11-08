@@ -8,15 +8,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/Gigman2/sentinel/backend/api/internal/domain"
+	"github.com/Gigman2/sentinel/backend/api/internal/platform/database"
 	"github.com/Gigman2/sentinel/backend/api/internal/platform/httpx"
 )
 
@@ -70,14 +67,12 @@ func BearerToken(r *http.Request) (string, bool) {
 	return token, token != ""
 }
 
-var errAmbiguous = errors.New("user belongs to more than one organization")
-
 // RequireUser authenticates the user token and attaches its Principal.
-// Unknown or revoked tokens get 401 unauthenticated. Any other database
-// failure gets 503 database_unavailable and is logged (never the token).
+// Unknown or revoked tokens get 401 unauthenticated. Any database failure
+// gets 503 database_unavailable and is logged (never the token).
 // Tokens are not organization-scoped in V0, so a user with several
 // memberships is rejected with 401 ambiguous_membership.
-func RequireUser(pool *pgxpool.Pool, log *slog.Logger) func(http.Handler) http.Handler {
+func RequireUser(db database.DBTX, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, ok := BearerToken(r)
@@ -85,52 +80,22 @@ func RequireUser(pool *pgxpool.Pool, log *slog.Logger) func(http.Handler) http.H
 				httpx.WriteError(w, r, http.StatusUnauthorized, "unauthenticated", "a valid bearer token is required")
 				return
 			}
-			p, err := lookupPrincipal(r.Context(), pool, Hash(token))
-			switch {
-			case err == nil:
-				next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
-			case errors.Is(err, pgx.ErrNoRows):
-				httpx.WriteError(w, r, http.StatusUnauthorized, "unauthenticated", "a valid bearer token is required")
-			case errors.Is(err, errAmbiguous):
-				httpx.WriteError(w, r, http.StatusUnauthorized, "ambiguous_membership", "this user belongs to more than one organization; organization-scoped tokens are not supported yet")
-			default:
+			// Two rows are enough to tell "one membership" from "several".
+			found, err := principalsByTokenHash(r.Context(), db, Hash(token), 2)
+			if err != nil {
 				log.Error("auth lookup failed", "err", err, "request_id", httpx.RequestIDFrom(r.Context()))
 				httpx.WriteError(w, r, http.StatusServiceUnavailable, "database_unavailable", "the service is temporarily unavailable")
+				return
+			}
+			switch len(found) {
+			case 1:
+				next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), found[0])))
+			case 0:
+				httpx.WriteError(w, r, http.StatusUnauthorized, "unauthenticated", "a valid bearer token is required")
+			default:
+				httpx.WriteError(w, r, http.StatusUnauthorized, "ambiguous_membership", "this user belongs to more than one organization; organization-scoped tokens are not supported yet")
 			}
 		})
-	}
-}
-
-func lookupPrincipal(ctx context.Context, pool *pgxpool.Pool, tokenHash string) (Principal, error) {
-	rows, err := pool.Query(ctx, `
-		SELECT t.user_id::text, m.organization_id::text, m.role
-		FROM api_tokens t
-		JOIN memberships m ON m.user_id = t.user_id
-		WHERE t.token_hash = $1 AND t.revoked_at IS NULL
-		LIMIT 2`, tokenHash)
-	if err != nil {
-		return Principal{}, err
-	}
-	defer rows.Close()
-
-	var found []Principal
-	for rows.Next() {
-		var p Principal
-		if err := rows.Scan(&p.UserID, &p.OrganizationID, &p.Role); err != nil {
-			return Principal{}, err
-		}
-		found = append(found, p)
-	}
-	if err := rows.Err(); err != nil {
-		return Principal{}, err
-	}
-	switch len(found) {
-	case 0:
-		return Principal{}, pgx.ErrNoRows
-	case 1:
-		return found[0], nil
-	default:
-		return Principal{}, errAmbiguous
 	}
 }
 

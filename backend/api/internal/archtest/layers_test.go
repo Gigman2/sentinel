@@ -3,10 +3,12 @@
 package archtest
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -87,6 +89,55 @@ func TestInternalLayering(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no Go files checked; is the test running from internal/archtest?")
+	}
+}
+
+// sqlStatement matches string literals that are SQL statements.
+var sqlStatement = regexp.MustCompile(`(?is)^\s*(SELECT\s|INSERT\s+INTO\s|UPDATE\s+\S+\s+SET\s|DELETE\s+FROM\s|WITH\s+\S+\s+AS\s*\()`)
+
+// groupsWithStores are the groups whose SQL must live in store files.
+// platform and support are exempt: they are infrastructure and tooling.
+var groupsWithStores = map[string]bool{"auth": true, "modules": true, "server": true}
+
+func isStoreFile(name string) bool {
+	return name == "store.go" || (strings.HasPrefix(name, "store_") && strings.HasSuffix(name, ".go"))
+}
+
+// TestSQLOnlyInStores keeps queries out of handlers and services: in auth,
+// modules and server, SQL statements may appear only in store.go or store_*.go.
+func TestSQLOnlyInStores(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	err = filepath.WalkDir(filepath.Join(root, "internal"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || isStoreFile(d.Name()) {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		if !groupsWithStores[group(filepath.ToSlash(filepath.Dir(rel)))] {
+			return nil
+		}
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			s, err := strconv.Unquote(lit.Value)
+			if err == nil && sqlStatement.MatchString(s) {
+				t.Errorf("%s:%d: SQL statement outside a store file; move it to store.go", rel, fset.Position(lit.Pos()).Line)
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
