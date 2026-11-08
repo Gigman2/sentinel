@@ -4,6 +4,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -67,4 +68,14 @@ func MigrateWithResults(ctx context.Context, dsn string) ([]*goose.MigrationResu
 		return nil, fmt.Errorf("apply migrations: %w", err)
 	}
 	return results, nil
+}
+
+// UniqueViolation reports whether err is a unique-constraint violation and,
+// if so, the name of the violated constraint or index.
+func UniqueViolation(err error) (constraint string, ok bool) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return pgErr.ConstraintName, true
+	}
+	return "", false
 }
