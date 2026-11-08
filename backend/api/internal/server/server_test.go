@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/Gigman2/sentinel/backend/api/internal/server"
-	"github.com/Gigman2/sentinel/backend/api/internal/testutil"
+	"github.com/Gigman2/sentinel/backend/api/internal/support/testutil"
 )
 
 func TestHealthz(t *testing.T) {

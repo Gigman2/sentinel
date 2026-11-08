@@ -36,6 +36,7 @@
 - Ingest status codes: `201` new, `200` replay, `400` invalid, `401` bad credential, `403` disabled/capability, `413` too large, `422` unmapped, `429` rate limited.
 - Migrations live in `backend/api/migrations/NNNN_name.sql` in goose format with `-- +goose Up` / `-- +goose Down` sections and no `StatementBegin` blocks (the Python test harness executes each Up section as one string). Every table has `created_at timestamptz NOT NULL DEFAULT now()`.
 - Lock order, everywhere: per-component advisory lock → incident row lock → job rows. No code path takes them in another order.
+- New Go packages go in the `internal/` group that matches their role (`platform`, `domain`, `auth`, `modules`, `server`, `support`). `internal/archtest` enforces the allowed imports; see `backend/api/internal/README.md`.
 - Go tests never call `t.Parallel()`.
 - No LLM, broker, Kubernetes, or cloud dependency in this phase.
 
@@ -61,19 +62,24 @@ backend/api/                                 module github.com/Gigman2/sentinel/
   migrations/0003_intake_rejections.sql
   migrations/0004_analysis.sql               analysis_jobs, analysis_revisions, findings, finding_evidence
   cmd/sentinel-api/main.go                   subcommands: migrate | seed | serve | healthcheck
-  internal/db/db.go                          Open, Migrate (goose Provider, no package globals)
-  internal/testutil/db.go                    NewDB(t): fresh migrated database per test
-  internal/domain/domain.go                  shared types and string constants
-  internal/httpx/httpx.go                    JSON/error writers, request IDs, body decoding, IsUUID
+  internal/README.md                         layout groups and the import rules between them
+  internal/archtest/layers_test.go           enforces those import rules
+  internal/platform/                         infrastructure, no business rules
+    database/database.go                     Open, Migrate (goose Provider, no package globals)
+    httpx/httpx.go                           JSON/error writers, request IDs, body decoding, IsUUID
+    metrics/metrics.go                       (Task 12)
+  internal/domain/domain.go                  shared constants (event types, statuses, link reasons, …)
   internal/auth/auth.go                      tokens, user principal middleware
-  internal/seed/seed.go                      idempotent tenant seeding (demo + tests)
-  internal/tenancy/{store,handlers}.go       projects, components
-  internal/integrations/{store,handlers}.go
-  internal/ingest/{validate,service,handler,ratelimit}.go
-  internal/incidents/{grouping,linking,store,handlers,timeline}.go
-  internal/analysis/{jobs,store,handlers}.go
-  internal/metrics/metrics.go
+  internal/modules/                          product features, one package each
+    tenancy/{store,handlers}.go              projects, components
+    integrations/{store,handlers}.go
+    ingest/{validate,service,handler,ratelimit}.go
+    incidents/{grouping,linking,store,handlers,timeline}.go
+    analysis/{jobs,store,handlers}.go
   internal/server/server.go                  New(Deps) http.Handler: all routes
+  internal/support/                          not product logic
+    seed/seed.go                             idempotent tenant seeding (demo + tests)
+    testutil/db.go                           NewDB(t): fresh migrated database per test
 backend/worker/
   pyproject.toml, uv.lock, Dockerfile
   sentinel_worker/{models,rules,store,main}.py
@@ -95,12 +101,12 @@ Go and Python tests that touch the database read `SENTINEL_TEST_DATABASE_URL` (l
 ### Task 1: Go module, schema foundation, migrations — PR `feat/p1-01-schema`
 
 **Files:**
-- Create: `backend/api/go.mod`, `backend/api/migrations/embed.go`, `backend/api/migrations/0001_tenancy.sql`, `backend/api/internal/db/db.go`, `backend/api/internal/testutil/db.go`, `backend/api/cmd/sentinel-api/main.go`
+- Create: `backend/api/go.mod`, `backend/api/migrations/embed.go`, `backend/api/migrations/0001_tenancy.sql`, `backend/api/internal/platform/database/database.go`, `backend/api/internal/support/testutil/db.go`, `backend/api/cmd/sentinel-api/main.go`
 - Modify: `Makefile` (add `test-api`)
-- Test: `backend/api/internal/db/db_test.go`
+- Test: `backend/api/internal/platform/database/database_test.go`
 
 **Interfaces:**
-- Produces: `migrations.FS embed.FS`; `db.Open(ctx, dsn string) (*pgxpool.Pool, error)`; `db.Migrate(ctx, dsn string) error` using `goose.NewProvider(goose.DialectPostgres, sqlDB, migrations.FS)` (no `goose.Set*` globals); `testutil.NewDB(t *testing.T) *pgxpool.Pool` (creates `sentinel_test_<16 hex>` from `SENTINEL_TEST_DATABASE_URL`, registers `DROP DATABASE … WITH (FORCE)` cleanup before migrating and logs a failed drop with `t.Logf`, then migrates; `t.Fatal` with a clear message if the variable is unset); `sentinel-api migrate` reading `DATABASE_URL`.
+- Produces: `migrations.FS embed.FS`; `database.Open(ctx, dsn string) (*pgxpool.Pool, error)`; `database.Migrate(ctx, dsn string) error` using `goose.NewProvider(goose.DialectPostgres, sqlDB, migrations.FS)` (no `goose.Set*` globals); `testutil.NewDB(t *testing.T) *pgxpool.Pool` (creates `sentinel_test_<16 hex>` from `SENTINEL_TEST_DATABASE_URL`, registers `DROP DATABASE … WITH (FORCE)` cleanup before migrating and logs a failed drop with `t.Logf`, then migrates; `t.Fatal` with a clear message if the variable is unset); `sentinel-api migrate` reading `DATABASE_URL`.
 
 Schema `0001_tenancy.sql` (ids `uuid DEFAULT gen_random_uuid()`):
 
@@ -119,11 +125,11 @@ integration_component_mappings(id, integration_id FK ON DELETE CASCADE, external
              environment text NOT NULL, component_id FK, UNIQUE(integration_id, external_component_id, environment))
 ```
 
-- [ ] **Step 1: Write the failing tests** in `internal/db/db_test.go`:
+- [ ] **Step 1: Write the failing tests** in `internal/platform/database/database_test.go`:
   - `TestMigrate_CreatesTenancyTables`: each of the eight tables exists (`to_regclass`).
   - `TestProjectSlugUniquePerOrganization`: the same slug `web` succeeds in two orgs; a second `web` in org A fails with SQLSTATE `23505` (assert via `errors.As(err, &pgErr)`).
-  - `TestMigrateIsIdempotent`: `db.Migrate` twice on the same DSN returns nil both times.
-- [ ] **Step 2:** `make db && cd backend/api && go test ./internal/db/...` → expect FAIL (packages missing).
+  - `TestMigrateIsIdempotent`: `database.Migrate` twice on the same DSN returns nil both times.
+- [ ] **Step 2:** `make db && cd backend/api && go test ./internal/platform/database/...` → expect FAIL (packages missing).
 - [ ] **Step 3:** Implement the interfaces above; `go mod init github.com/Gigman2/sentinel/backend/api` with `go 1.26`. Add `test-api: db` to the Makefile, running `cd backend/api && SENTINEL_TEST_DATABASE_URL=… go test -count=1 ./...`.
 - [ ] **Step 4:** Re-run and expect PASS. Also run `go vet ./...`, and run `DATABASE_URL=… go run ./cmd/sentinel-api migrate` twice; the second run reports no pending migrations.
 - [ ] **Step 5:** Commit `feat(api): Go module, tenancy schema and migrations`, push, open PR, confirm CI's Go job now runs and passes.
@@ -133,8 +139,8 @@ integration_component_mappings(id, integration_id FK ON DELETE CASCADE, external
 ### Task 2: HTTP foundation, auth, seeding — PR `feat/p1-02-http-auth`
 
 **Files:**
-- Create: `internal/domain/domain.go`, `internal/httpx/httpx.go`, `internal/auth/auth.go`, `internal/seed/seed.go`, `internal/server/server.go`; modify `cmd/sentinel-api/main.go` (`seed`, `serve`, `healthcheck`)
-- Test: `internal/httpx/httpx_test.go`, `internal/auth/auth_test.go`, `internal/seed/seed_test.go`, `internal/server/server_test.go`
+- Create: `internal/domain/domain.go`, `internal/platform/httpx/httpx.go`, `internal/auth/auth.go`, `internal/support/seed/seed.go`, `internal/server/server.go`; modify `cmd/sentinel-api/main.go` (`seed`, `serve`, `healthcheck`)
+- Test: `internal/platform/httpx/httpx_test.go`, `internal/auth/auth_test.go`, `internal/support/seed/seed_test.go`, `internal/server/server_test.go`
 
 **Interfaces:**
 - Produces:
@@ -166,8 +172,8 @@ integration_component_mappings(id, integration_id FK ON DELETE CASCADE, external
 ### Task 3: First vertical cut — alert to incident — PR `feat/p1-03-alert-to-incident`
 
 **Files:**
-- Create: `migrations/0002_events_incidents.sql`, `internal/ingest/{validate,service,handler}.go`, `internal/incidents/{grouping,store,handlers}.go`; modify `internal/server/server.go`
-- Test: `internal/ingest/handler_test.go`, `internal/incidents/handlers_test.go`, `internal/testutil/http.go` (shared test helpers: `PostJSON`, `GetJSON`, `Decode[T]`; no string-slicing JSON)
+- Create: `migrations/0002_events_incidents.sql`, `internal/modules/ingest/{validate,service,handler}.go`, `internal/modules/incidents/{grouping,store,handlers}.go`; modify `internal/server/server.go`
+- Test: `internal/modules/ingest/handler_test.go`, `internal/modules/incidents/handlers_test.go`, `internal/support/testutil/http.go` (shared test helpers: `PostJSON`, `GetJSON`, `Decode[T]`; no string-slicing JSON)
 
 Schema `0002`:
 
@@ -215,8 +221,8 @@ incident_events(incident_id FK, event_id FK, reason text NOT NULL, linked_at tim
 ### Task 4: Project, component and integration management — PR `feat/p1-04-management-api`
 
 **Files:**
-- Create: `internal/tenancy/{store,handlers}.go`, `internal/integrations/{store,handlers}.go`; modify `internal/server/server.go`, `internal/ingest/handler.go`
-- Test: `internal/tenancy/handlers_test.go`, `internal/integrations/handlers_test.go`
+- Create: `internal/modules/tenancy/{store,handlers}.go`, `internal/modules/integrations/{store,handlers}.go`; modify `internal/server/server.go`, `internal/modules/ingest/handler.go`
+- Test: `internal/modules/tenancy/handlers_test.go`, `internal/modules/integrations/handlers_test.go`
 
 **Interfaces:**
 - Every route below is behind `RequireUser`. Integration create, PATCH, rotate and add-mapping also need `RequireAdmin`. Bodies are capped at 1 MiB, and non-UUID path IDs return 404.
@@ -255,8 +261,8 @@ incident_events(incident_id FK, event_id FK, reason text NOT NULL, linked_at tim
 ### Task 5: Complete intake — PR `feat/p1-05-intake`
 
 **Files:**
-- Create: `migrations/0003_intake_rejections.sql`, `internal/ingest/ratelimit.go`; modify `internal/ingest/{validate,service,handler}.go`
-- Test: `internal/ingest/validate_test.go`, `internal/ingest/handler_test.go`
+- Create: `migrations/0003_intake_rejections.sql`, `internal/modules/ingest/ratelimit.go`; modify `internal/modules/ingest/{validate,service,handler}.go`
+- Test: `internal/modules/ingest/validate_test.go`, `internal/modules/ingest/handler_test.go`
 
 `intake_rejections(id, integration_id FK, organization_id, received_at, code text NOT NULL, source_event_id text, external_component_id text, environment text)`. It stores no payload.
 
@@ -295,7 +301,7 @@ incident_events(incident_id FK, event_id FK, reason text NOT NULL, linked_at tim
     - `TestCapabilityEnforced`
     - `TestEvidenceEventsDoNotOpenIncidents`
     - `TestRateLimited`: `IngestRate: 0.001`, burst 2, so the third request returns 429 and another integration is unaffected.
-- [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** `go test -count=1 ./...` and `go test -race ./internal/ingest/...` → PASS.
+- [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** `go test -count=1 ./...` and `go test -race ./internal/modules/ingest/...` → PASS.
 - [ ] **Step 5:** Commit `feat(api): full v0 intake with validation, dedupe and rejection records`; PR.
 
 ---
@@ -303,8 +309,8 @@ incident_events(incident_id FK, event_id FK, reason text NOT NULL, linked_at tim
 ### Task 6: Incident lifecycle — PR `feat/p1-06-incident-lifecycle`
 
 **Files:**
-- Modify: `internal/incidents/{grouping,store,handlers}.go`, `internal/ingest/service.go`, `internal/server/server.go`
-- Test: `internal/incidents/grouping_test.go`, `internal/incidents/handlers_test.go`
+- Modify: `internal/modules/incidents/{grouping,store,handlers}.go`, `internal/modules/ingest/service.go`, `internal/server/server.go`
+- Test: `internal/modules/incidents/grouping_test.go`, `internal/modules/incidents/handlers_test.go`
 
 **Interfaces:**
 - **`incidents.ApplyAlertTriggered`, full version:**
@@ -343,8 +349,8 @@ incident_events(incident_id FK, event_id FK, reason text NOT NULL, linked_at tim
 ### Task 7: Evidence window linking and timeline — PR `feat/p1-07-evidence-timeline`
 
 **Files:**
-- Create: `internal/incidents/linking.go`, `internal/incidents/timeline.go`; modify `internal/incidents/grouping.go`, `internal/ingest/service.go`, `internal/server/server.go`
-- Test: `internal/incidents/linking_test.go`, `internal/incidents/timeline_test.go`
+- Create: `internal/modules/incidents/linking.go`, `internal/modules/incidents/timeline.go`; modify `internal/modules/incidents/grouping.go`, `internal/modules/ingest/service.go`, `internal/server/server.go`
+- Test: `internal/modules/incidents/linking_test.go`, `internal/modules/incidents/timeline_test.go`
 
 **Interfaces:**
 - **Window constants:** `WindowBefore = 30 * time.Minute`, `WindowAfter = 15 * time.Minute`.
@@ -388,8 +394,8 @@ incident_events(incident_id FK, event_id FK, reason text NOT NULL, linked_at tim
 ### Task 8: Durable analysis jobs and analysis read model — PR `feat/p1-08-analysis-jobs`
 
 **Files:**
-- Create: `migrations/0004_analysis.sql`, `internal/analysis/{jobs,store,handlers}.go`; modify `internal/ingest/service.go`, `internal/incidents/handlers.go`, `internal/server/server.go`
-- Test: `internal/analysis/jobs_test.go`, `internal/analysis/handlers_test.go`, `internal/ingest/enqueue_test.go`
+- Create: `migrations/0004_analysis.sql`, `internal/modules/analysis/{jobs,store,handlers}.go`; modify `internal/modules/ingest/service.go`, `internal/modules/incidents/handlers.go`, `internal/server/server.go`
+- Test: `internal/modules/analysis/jobs_test.go`, `internal/modules/analysis/handlers_test.go`, `internal/modules/ingest/enqueue_test.go`
 
 Schema `0004`:
 
@@ -596,9 +602,9 @@ finding_evidence(finding_id FK, event_id FK operational_events, PRIMARY KEY(find
 ### Task 12: One-command stack, demo, metrics, docs — PR `feat/p1-12-stack-demo`
 
 **Files:**
-- Create: `backend/api/Dockerfile` (`golang:1.26` builder → `alpine`; entrypoint runs `migrate`, `seed`, `serve`), `backend/worker/Dockerfile` (python slim + uv, `uv sync --frozen --no-dev`), `frontend/Dockerfile` (node build → `nginx:alpine`), `frontend/nginx.conf`, `.env.example`, `backend/api/internal/metrics/metrics.go`, `scripts/demo.py`, `docs/adr/0001-phase-1-defaults.md`
-- Modify: `docker-compose.yml`, `Makefile`, `README.md`, `backend/api/internal/server/server.go`, `backend/api/internal/ingest/handler.go`, `backend/api/cmd/sentinel-api/main.go`
-- Test: `backend/api/internal/metrics/metrics_test.go`, plus the end-to-end demo run below
+- Create: `backend/api/Dockerfile` (`golang:1.26` builder → `alpine`; entrypoint runs `migrate`, `seed`, `serve`), `backend/worker/Dockerfile` (python slim + uv, `uv sync --frozen --no-dev`), `frontend/Dockerfile` (node build → `nginx:alpine`), `frontend/nginx.conf`, `.env.example`, `backend/api/internal/platform/metrics/metrics.go`, `scripts/demo.py`, `docs/adr/0001-phase-1-defaults.md`
+- Modify: `docker-compose.yml`, `Makefile`, `README.md`, `backend/api/internal/server/server.go`, `backend/api/internal/modules/ingest/handler.go`, `backend/api/cmd/sentinel-api/main.go`
+- Test: `backend/api/internal/platform/metrics/metrics_test.go`, plus the end-to-end demo run below
 
 **Interfaces:**
 - **`docker-compose.yml`** has these services:

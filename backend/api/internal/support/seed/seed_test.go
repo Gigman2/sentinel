@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/Gigman2/sentinel/backend/api/internal/auth"
-	"github.com/Gigman2/sentinel/backend/api/internal/seed"
-	"github.com/Gigman2/sentinel/backend/api/internal/testutil"
+	"github.com/Gigman2/sentinel/backend/api/internal/support/seed"
+	"github.com/Gigman2/sentinel/backend/api/internal/support/testutil"
 )
 
 func TestSeed_IdempotentAndScoped(t *testing.T) {

@@ -1,5 +1,5 @@
-// Package db opens PostgreSQL connections and applies schema migrations.
-package db
+// Package database opens PostgreSQL connections and applies schema migrations.
+package database
 
 import (
 	"context"

@@ -5,14 +5,14 @@ Module: `github.com/Gigman2/sentinel/backend/api` (Go 1.26).
 ```
 api/
 ├── cmd/sentinel-api/   entry point: migrate | seed | serve | healthcheck
-├── internal/
+├── internal/          grouped by role; see internal/README.md for the import rules
+│   ├── platform/       database, httpx (infrastructure)
+│   ├── domain/         shared constants
 │   ├── auth/           tokens, user authentication, admin check
-│   ├── db/             Open, Migrate
-│   ├── domain/         shared constants (event types, statuses, link reasons, …)
-│   ├── httpx/          JSON responses, error envelope, request IDs, strict decoding
-│   ├── seed/           idempotent demo tenant (also used by tests)
+│   ├── modules/        product features (added from Task 3 on)
 │   ├── server/         routes
-│   └── testutil/       NewDB: a fresh migrated database per test
+│   ├── support/        seed (demo tenant), testutil (per-test databases)
+│   └── archtest/       enforces the import rules
 ├── migrations/         SQL migrations, goose format, embedded in the binary
 └── Dockerfile          (later)
 ```

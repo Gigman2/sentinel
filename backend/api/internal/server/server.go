@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
 
-	"github.com/Gigman2/sentinel/backend/api/internal/httpx"
+	"github.com/Gigman2/sentinel/backend/api/internal/platform/httpx"
 )
 
 // Deps are the server's dependencies.

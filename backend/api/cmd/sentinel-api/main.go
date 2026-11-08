@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Gigman2/sentinel/backend/api/internal/db"
-	"github.com/Gigman2/sentinel/backend/api/internal/seed"
+	"github.com/Gigman2/sentinel/backend/api/internal/platform/database"
 	"github.com/Gigman2/sentinel/backend/api/internal/server"
+	"github.com/Gigman2/sentinel/backend/api/internal/support/seed"
 )
 
 const usage = `usage: sentinel-api <command>
@@ -66,7 +66,7 @@ func runMigrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	results, err := db.MigrateWithResults(ctx, dsn)
+	results, err := database.MigrateWithResults(ctx, dsn)
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func runSeed(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	pool, err := db.Open(ctx, dsn)
+	pool, err := database.Open(ctx, dsn)
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	pool, err := db.Open(ctx, dsn)
+	pool, err := database.Open(ctx, dsn)
 	if err != nil {
 		return err
 	}

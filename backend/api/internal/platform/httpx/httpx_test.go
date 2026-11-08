@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Gigman2/sentinel/backend/api/internal/httpx"
+	"github.com/Gigman2/sentinel/backend/api/internal/platform/httpx"
 )
 
 type body struct {

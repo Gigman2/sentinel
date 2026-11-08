@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Gigman2/sentinel/backend/api/internal/domain"
-	"github.com/Gigman2/sentinel/backend/api/internal/httpx"
+	"github.com/Gigman2/sentinel/backend/api/internal/platform/httpx"
 )
 
 // NewToken returns a new random token with the given prefix and its hash.
