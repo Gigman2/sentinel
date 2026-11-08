@@ -10,6 +10,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/Gigman2/sentinel/backend/api/internal/auth"
+	"github.com/Gigman2/sentinel/backend/api/internal/modules/analysis"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/incidents"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/ingest"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/integrations"
@@ -88,6 +89,9 @@ func New(d Deps) http.Handler {
 	mux.Handle("GET /v1/incidents/{incidentId}", member(inc.Get))
 	mux.Handle("GET /v1/incidents/{incidentId}/timeline", member(inc.Timeline))
 	mux.Handle("POST /v1/incidents/{incidentId}/resolve", member(inc.Resolve))
+
+	an := analysis.Handlers{Service: analysis.Service{Pool: d.Pool}, Log: d.Logger}
+	mux.Handle("POST /v1/incidents/{incidentId}/reanalyze", member(an.Reanalyze))
 
 	return httpx.RequestID(mux)
 }
