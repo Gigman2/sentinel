@@ -31,7 +31,7 @@ type Deps struct {
 // Default ingest rate limit per integration.
 const (
 	DefaultIngestRate  rate.Limit = 20
-	DefaultIngestBurst            = 40
+	DefaultIngestBurst int        = 40
 )
 
 // New returns the HTTP handler with all routes.
@@ -79,6 +79,7 @@ func New(d Deps) http.Handler {
 	// Integrations authenticate with their own credential, not a user token.
 	mux.Handle("POST /v1/ingest/{integrationId}/events", ingest.Handler{
 		Service: ingest.Service{Pool: d.Pool, Now: d.Now},
+		Limiter: ingest.NewLimiter(d.IngestRate, d.IngestBurst),
 		Log:     d.Logger,
 	})
 

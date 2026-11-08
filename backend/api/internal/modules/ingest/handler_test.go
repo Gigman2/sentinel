@@ -17,12 +17,20 @@ var now = time.Date(2026, 11, 8, 14, 9, 0, 0, time.UTC)
 
 func setup(t *testing.T) (http.Handler, seed.Result, func(sql string, args ...any) int) {
 	t.Helper()
+	return setupWith(t, server.Deps{})
+}
+
+// setupWith seeds the demo tenant and builds a server from deps (Pool,
+// Logger and Now are filled in).
+func setupWith(t *testing.T, deps server.Deps) (http.Handler, seed.Result, func(sql string, args ...any) int) {
+	t.Helper()
 	pool := testutil.NewDB(t)
 	res, err := seed.Seed(context.Background(), pool, seed.Config{OrgSlug: "uppsel", OrgName: "Uppsel", AdminEmail: "admin@uppsel.test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := server.New(server.Deps{Pool: pool, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: func() time.Time { return now }})
+	deps.Pool, deps.Logger, deps.Now = pool, slog.New(slog.NewTextHandler(io.Discard, nil)), func() time.Time { return now }
+	h := server.New(deps)
 	count := func(sql string, args ...any) int {
 		t.Helper()
 		var n int
