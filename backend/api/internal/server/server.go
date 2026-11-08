@@ -12,6 +12,8 @@ import (
 	"github.com/Gigman2/sentinel/backend/api/internal/auth"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/incidents"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/ingest"
+	"github.com/Gigman2/sentinel/backend/api/internal/modules/integrations"
+	"github.com/Gigman2/sentinel/backend/api/internal/modules/tenancy"
 	"github.com/Gigman2/sentinel/backend/api/internal/platform/httpx"
 )
 
@@ -58,6 +60,21 @@ func New(d Deps) http.Handler {
 	})
 
 	user := auth.RequireUser(d.Pool, d.Logger)
+	admin := func(h http.HandlerFunc) http.Handler { return user(auth.RequireAdmin(h)) }
+	member := func(h http.HandlerFunc) http.Handler { return user(h) }
+
+	ten := tenancy.Handlers{Service: tenancy.Service{DB: d.Pool}, Log: d.Logger}
+	mux.Handle("POST /v1/projects", member(ten.CreateProject))
+	mux.Handle("GET /v1/projects", member(ten.ListProjects))
+	mux.Handle("POST /v1/projects/{projectId}/components", member(ten.CreateComponent))
+	mux.Handle("GET /v1/projects/{projectId}/components", member(ten.ListComponents))
+
+	integ := integrations.Handlers{Service: integrations.Service{Pool: d.Pool}, Log: d.Logger}
+	mux.Handle("POST /v1/projects/{projectId}/integrations", admin(integ.Create))
+	mux.Handle("GET /v1/projects/{projectId}/integrations", member(integ.List))
+	mux.Handle("PATCH /v1/integrations/{integrationId}", admin(integ.Patch))
+	mux.Handle("POST /v1/integrations/{integrationId}/rotate-credential", admin(integ.RotateCredential))
+	mux.Handle("POST /v1/integrations/{integrationId}/mappings", admin(integ.AddMapping))
 
 	// Integrations authenticate with their own credential, not a user token.
 	mux.Handle("POST /v1/ingest/{integrationId}/events", ingest.Handler{
@@ -66,7 +83,7 @@ func New(d Deps) http.Handler {
 	})
 
 	inc := incidents.Handlers{Service: incidents.Service{DB: d.Pool}, Log: d.Logger}
-	mux.Handle("GET /v1/incidents/{incidentId}", user(http.HandlerFunc(inc.Get)))
+	mux.Handle("GET /v1/incidents/{incidentId}", member(inc.Get))
 
 	return httpx.RequestID(mux)
 }

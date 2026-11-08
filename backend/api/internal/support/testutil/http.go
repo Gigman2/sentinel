@@ -11,13 +11,20 @@ import (
 // PostJSON sends body as JSON to h with an optional bearer token.
 func PostJSON(t *testing.T, h http.Handler, path, token string, body any) *httptest.ResponseRecorder {
 	t.Helper()
+	return SendJSON(t, h, http.MethodPost, path, token, body)
+}
+
+// SendJSON sends body as JSON with the given method. A string body is sent
+// verbatim; anything else is JSON-encoded.
+func SendJSON(t *testing.T, h http.Handler, method, path, token string, body any) *httptest.ResponseRecorder {
+	t.Helper()
 	var buf bytes.Buffer
 	if s, ok := body.(string); ok {
 		buf.WriteString(s)
 	} else if err := json.NewEncoder(&buf).Encode(body); err != nil {
 		t.Fatalf("encode request body: %v", err)
 	}
-	return Do(t, h, http.MethodPost, path, token, &buf)
+	return Do(t, h, method, path, token, &buf)
 }
 
 // GetJSON sends a GET to h with an optional bearer token.
