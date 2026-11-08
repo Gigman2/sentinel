@@ -131,11 +131,23 @@ func (s Service) Accept(ctx context.Context, in Integration, e Envelope) (Result
 	result := Result{EventID: ev.ID}
 	switch ev.Type {
 	case domain.EventAlertTriggered:
-		incidentID, _, err := incidents.ApplyAlertTriggered(ctx, tx, ev)
+		incidentID, created, err := incidents.ApplyAlertTriggered(ctx, tx, ev)
 		if err != nil {
 			return Result{}, err
 		}
-		result.Disposition, result.IncidentID = domain.DispositionIncidentCreated, &incidentID
+		result.Disposition, result.IncidentID = domain.DispositionIncidentAttached, &incidentID
+		if created {
+			result.Disposition = domain.DispositionIncidentCreated
+		}
+	case domain.EventAlertResolved:
+		incidentID, matched, err := incidents.ApplyAlertResolved(ctx, tx, ev)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Disposition = domain.DispositionUnmatchedResolution
+		if matched {
+			result.Disposition, result.IncidentID = domain.DispositionIncidentResolved, &incidentID
+		}
 	default:
 		result.Disposition = initialDisposition(ev.Type)
 	}
@@ -148,17 +160,13 @@ func (s Service) Accept(ctx context.Context, in Integration, e Envelope) (Result
 
 var errDuplicate = errors.New("duplicate source_event_id")
 
-// initialDisposition is what an event is stored with. Alerts get their final
-// disposition from the incidents package in the same transaction; the empty
-// value is never committed.
+// initialDisposition is what an event is stored with. Alert events
+// (triggered and resolved) get their final disposition from the incidents
+// package in the same transaction; the empty value is never committed.
 func initialDisposition(eventType string) string {
 	switch eventType {
-	case domain.EventAlertTriggered:
+	case domain.EventAlertTriggered, domain.EventAlertResolved:
 		return ""
-	case domain.EventAlertResolved:
-		// Matching a resolution to an open incident comes with the incident
-		// lifecycle work (plan Task 6).
-		return domain.DispositionUnmatchedResolution
 	default:
 		return domain.DispositionEvidence
 	}

@@ -2,9 +2,11 @@ package incidents_test
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,5 +98,142 @@ func TestGetIncident_NotFoundCases(t *testing.T) {
 
 	if w := testutil.GetJSON(t, h, "/v1/incidents/"+id, ""); w.Code != http.StatusUnauthorized {
 		t.Fatalf("no token: %d", w.Code)
+	}
+}
+
+func TestManualResolve(t *testing.T) {
+	f := newFixture(t)
+	other, err := seed.Seed(context.Background(), f.pool, seed.Config{OrgSlug: "otherco", OrgName: "Other", AdminEmail: "admin@other.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := *f.send(alertEvent("a-1", "payments-errors", "critical", now)).IncidentID
+	path := "/v1/incidents/" + id + "/resolve"
+
+	// Another organization cannot see it.
+	if w := testutil.PostJSON(t, f.h, path, other.AdminToken, map[string]any{"note": "x"}); w.Code != http.StatusNotFound {
+		t.Fatalf("other org: %d %s", w.Code, w.Body)
+	}
+	if w := testutil.PostJSON(t, f.h, "/v1/incidents/not-a-uuid/resolve", f.s.AdminToken, map[string]any{}); w.Code != http.StatusNotFound {
+		t.Fatalf("malformed id: %d", w.Code)
+	}
+	if w := testutil.PostJSON(t, f.h, path, f.s.AdminToken, map[string]any{"note": strings.Repeat("é", 4001)}); w.Code != http.StatusBadRequest || testutil.ErrorCode(t, w) != "invalid_note" {
+		t.Fatalf("long note: %d %s", w.Code, w.Body)
+	}
+
+	w := testutil.PostJSON(t, f.h, path, f.s.AdminToken, map[string]any{"note": strings.Repeat("é", 4000)})
+	if w.Code != http.StatusOK {
+		t.Fatalf("resolve: %d %s", w.Code, w.Body)
+	}
+	got := testutil.Decode[incidentView](t, w)
+	if got.Status != "resolved" || got.ResolvedAt == nil || !got.ResolvedAt.Equal(now) ||
+		got.Resolution == nil || got.Resolution.Source != "manual" || got.Resolution.Note == nil || len([]rune(*got.Resolution.Note)) != 4000 {
+		t.Fatalf("resolved view: %+v", got)
+	}
+
+	w = testutil.PostJSON(t, f.h, path, f.s.AdminToken, map[string]any{"note": "again"})
+	if w.Code != http.StatusConflict || testutil.ErrorCode(t, w) != "already_resolved" {
+		t.Fatalf("second resolve: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestListIncidentsNewestFirstAndPaginated(t *testing.T) {
+	f := newFixture(t)
+	other, err := seed.Seed(context.Background(), f.pool, seed.Config{OrgSlug: "otherco", OrgName: "Other", AdminEmail: "admin@other.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := *f.send(alertEvent("a", "fp-a", "warning", now.Add(-3*time.Minute))).IncidentID
+	b := *f.send(alertEvent("b", "fp-b", "critical", now.Add(-2*time.Minute))).IncidentID
+	c := *f.send(alertEvent("c", "fp-c", "critical", now.Add(-2*time.Minute))).IncidentID
+	d := *f.send(alertEvent("d", "fp-d", "error", now.Add(-time.Minute))).IncidentID
+
+	// b and c share last_seen_at; ties order by id descending.
+	tied := []string{b, c}
+	if b < c {
+		tied = []string{c, b}
+	}
+	want := []string{d, tied[0], tied[1], a}
+
+	type item struct {
+		ID        string `json:"id"`
+		Status    string `json:"status"`
+		Severity  string `json:"severity"`
+		Title     string `json:"title"`
+		Component struct {
+			Slug        string `json:"slug"`
+			DisplayName string `json:"display_name"`
+		} `json:"component"`
+		Environment string    `json:"environment"`
+		FirstSeenAt time.Time `json:"first_seen_at"`
+		LastSeenAt  time.Time `json:"last_seen_at"`
+	}
+	type page struct {
+		Items      []item  `json:"items"`
+		NextCursor *string `json:"next_cursor"`
+	}
+	base := "/v1/projects/" + f.s.ProjectID + "/incidents"
+
+	var got []string
+	cursor := ""
+	for pages := 0; ; pages++ {
+		if pages > 3 {
+			t.Fatal("pagination did not end")
+		}
+		path := base + "?limit=2"
+		if cursor != "" {
+			path += "&cursor=" + cursor
+		}
+		w := testutil.GetJSON(t, f.h, path, f.s.AdminToken)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", w.Code, w.Body)
+		}
+		p := testutil.Decode[page](t, w)
+		for _, it := range p.Items {
+			got = append(got, it.ID)
+			if it.ID == d && (it.Status != "open" || it.Severity != "error" || it.Component.Slug != "payment-service" ||
+				it.Component.DisplayName == "" || it.Environment != "production" || it.Title == "" || !it.LastSeenAt.Equal(now.Add(-time.Minute))) {
+				t.Fatalf("item shape: %+v", it)
+			}
+		}
+		if p.NextCursor == nil {
+			break
+		}
+		cursor = *p.NextCursor
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order\n got %v\nwant %v", got, want)
+	}
+
+	// Status filter.
+	if w := testutil.PostJSON(t, f.h, "/v1/incidents/"+a+"/resolve", f.s.AdminToken, map[string]any{}); w.Code != http.StatusOK {
+		t.Fatalf("resolve: %d %s", w.Code, w.Body)
+	}
+	for status, n := range map[string]int{"open": 3, "resolved": 1, "": 4} {
+		w := testutil.GetJSON(t, f.h, base+"?status="+status, f.s.AdminToken)
+		if p := testutil.Decode[page](t, w); w.Code != http.StatusOK || len(p.Items) != n || p.NextCursor != nil {
+			t.Fatalf("status=%q: %d, %d items", status, w.Code, len(p.Items))
+		}
+	}
+
+	errs := []struct {
+		name, path, token string
+		status            int
+		code              string
+	}{
+		{"other org project", base + "?status=bogus", other.AdminToken, 404, "not_found"},
+		{"unknown project", "/v1/projects/2dd80324-2e0e-421e-95f0-f848067c4124/incidents", f.s.AdminToken, 404, "not_found"},
+		{"bad status", base + "?status=closed&limit=0", f.s.AdminToken, 400, "invalid_status"},
+		{"limit 0", base + "?limit=0&cursor=%21", f.s.AdminToken, 400, "invalid_limit"},
+		{"limit 101", base + "?limit=101", f.s.AdminToken, 400, "invalid_limit"},
+		{"limit text", base + "?limit=ten", f.s.AdminToken, 400, "invalid_limit"},
+		{"cursor not base64", base + "?cursor=%21%21", f.s.AdminToken, 400, "invalid_cursor"},
+		{"cursor bad content", base + "?cursor=" + base64.RawURLEncoding.EncodeToString([]byte("yesterday|nope")), f.s.AdminToken, 400, "invalid_cursor"},
+	}
+	for _, e := range errs {
+		w := testutil.GetJSON(t, f.h, e.path, e.token)
+		if w.Code != e.status || testutil.ErrorCode(t, w) != e.code {
+			t.Fatalf("%s: %d %s", e.name, w.Code, w.Body)
+		}
 	}
 }

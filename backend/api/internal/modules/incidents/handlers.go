@@ -27,11 +27,66 @@ func (h Handlers) Get(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrNotFound):
 		writeNotFound(w, r)
 	case err != nil:
-		h.Log.Error("get incident", "err", err, "request_id", httpx.RequestIDFrom(r.Context()))
-		httpx.WriteError(w, r, http.StatusServiceUnavailable, "database_unavailable", "the service is temporarily unavailable")
+		h.unavailable(w, r, "get incident", err)
 	default:
 		httpx.WriteJSON(w, http.StatusOK, inc)
 	}
+}
+
+// Resolve handles POST /v1/incidents/{incidentId}/resolve. Any member may resolve.
+func (h Handlers) Resolve(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("incidentId")
+	if !httpx.IsUUID(id) {
+		writeNotFound(w, r)
+		return
+	}
+	var body struct {
+		Note string `json:"note"`
+	}
+	if rej := httpx.DecodeJSON(w, r, &body, maxBodyBytes); rej != nil {
+		httpx.WriteErr(w, r, rej)
+		return
+	}
+	inc, err := h.Service.Resolve(r.Context(), auth.PrincipalFrom(r.Context()).OrganizationID, id, body.Note)
+	var rej *httpx.Error
+	switch {
+	case errors.As(err, &rej):
+		httpx.WriteErr(w, r, rej)
+	case errors.Is(err, ErrNotFound):
+		writeNotFound(w, r)
+	case errors.Is(err, ErrAlreadyResolved):
+		httpx.WriteError(w, r, http.StatusConflict, "already_resolved", "this incident is already resolved")
+	case err != nil:
+		h.unavailable(w, r, "resolve incident", err)
+	default:
+		httpx.WriteJSON(w, http.StatusOK, inc)
+	}
+}
+
+// List handles GET /v1/projects/{projectId}/incidents.
+func (h Handlers) List(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	page, err := h.Service.List(r.Context(), auth.PrincipalFrom(r.Context()).OrganizationID,
+		r.PathValue("projectId"), q.Get("status"), q.Get("limit"), q.Get("cursor"))
+	var rej *httpx.Error
+	switch {
+	case errors.As(err, &rej):
+		httpx.WriteErr(w, r, rej)
+	case errors.Is(err, ErrProjectNotFound):
+		httpx.WriteError(w, r, http.StatusNotFound, "not_found", "no matching project found")
+	case err != nil:
+		h.unavailable(w, r, "list incidents", err)
+	default:
+		httpx.WriteJSON(w, http.StatusOK, page)
+	}
+}
+
+// maxBodyBytes bounds request bodies for incident endpoints.
+const maxBodyBytes = 64 << 10
+
+func (h Handlers) unavailable(w http.ResponseWriter, r *http.Request, what string, err error) {
+	h.Log.Error(what, "err", err, "request_id", httpx.RequestIDFrom(r.Context()))
+	httpx.WriteError(w, r, http.StatusServiceUnavailable, "database_unavailable", "the service is temporarily unavailable")
 }
 
 func writeNotFound(w http.ResponseWriter, r *http.Request) {

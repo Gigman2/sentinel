@@ -7,9 +7,18 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"encoding/base64"
+	"net/http"
+	"strconv"
+	"strings"
+	"unicode/utf8"
 
-	"github.com/Gigman2/sentinel/backend/api/internal/platform/database"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Gigman2/sentinel/backend/api/internal/domain"
+	"github.com/Gigman2/sentinel/backend/api/internal/modules/tenancy"
+	"github.com/Gigman2/sentinel/backend/api/internal/platform/httpx"
 )
 
 // The evidence window around an incident: stored events for the same
@@ -65,14 +74,36 @@ type Incident struct {
 	TriggerEventID string      `json:"trigger_event_id"`
 }
 
-// Service serves incident reads.
+// Resolution sources.
+const (
+	ResolutionAlert  = "alert"
+	ResolutionManual = "manual"
+)
+
+// MaxNoteRunes is the longest manual resolution note accepted.
+const MaxNoteRunes = 4000
+
+// Listing page sizes.
+const (
+	DefaultListLimit = 50
+	MaxListLimit     = 100
+)
+
+// ErrAlreadyResolved means a manual resolve found the incident already resolved.
+var ErrAlreadyResolved = errors.New("incident already resolved")
+
+// ErrProjectNotFound means the project does not exist in the caller's organization.
+var ErrProjectNotFound = errors.New("project not found")
+
+// Service serves incident reads and manual resolution.
 type Service struct {
-	DB database.DBTX
+	Pool *pgxpool.Pool
+	Now  func() time.Time
 }
 
 // Get returns an incident visible to orgID, or ErrNotFound.
 func (s Service) Get(ctx context.Context, orgID, incidentID string) (Incident, error) {
-	r, err := incidentInOrg(ctx, s.DB, orgID, incidentID)
+	r, err := incidentInOrg(ctx, s.Pool, orgID, incidentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Incident{}, ErrNotFound
 	}
@@ -103,4 +134,142 @@ func (s Service) Get(ctx context.Context, orgID, incidentID string) (Incident, e
 		inc.Resolution = &Resolution{Source: *r.ResolutionSource, Note: r.ResolutionNote}
 	}
 	return inc, nil
+}
+
+// Resolve manually resolves an open incident visible to orgID. A note longer
+// than MaxNoteRunes is an *httpx.Error; an empty note is stored as none.
+func (s Service) Resolve(ctx context.Context, orgID, incidentID, note string) (Incident, error) {
+	if utf8.RuneCountInString(note) > MaxNoteRunes {
+		return Incident{}, &httpx.Error{Status: http.StatusBadRequest, Code: "invalid_note",
+			Message: "note must be at most 4000 characters"}
+	}
+	var notePtr *string
+	if note != "" {
+		notePtr = &note
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return Incident{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	status, err := incidentStatusInOrgForUpdate(ctx, tx, orgID, incidentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Incident{}, ErrNotFound
+	}
+	if err != nil {
+		return Incident{}, err
+	}
+	if status == domain.IncidentResolved {
+		return Incident{}, ErrAlreadyResolved
+	}
+	now := s.Now().UTC()
+	if err := markIncidentResolved(ctx, tx, incidentID, now, ResolutionManual, notePtr, now); err != nil {
+		return Incident{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Incident{}, err
+	}
+	return s.Get(ctx, orgID, incidentID)
+}
+
+// ListItem is one incident in a project listing.
+type ListItem struct {
+	ID          string        `json:"id"`
+	Status      string        `json:"status"`
+	Severity    string        `json:"severity"`
+	Title       string        `json:"title"`
+	Component   ListComponent `json:"component"`
+	Environment string        `json:"environment"`
+	FirstSeenAt time.Time     `json:"first_seen_at"`
+	LastSeenAt  time.Time     `json:"last_seen_at"`
+}
+
+// ListComponent names an incident's component in a listing.
+type ListComponent struct {
+	Slug        string `json:"slug"`
+	DisplayName string `json:"display_name"`
+}
+
+// Page is one page of a listing. NextCursor is null on the last page.
+type Page struct {
+	Items      []ListItem `json:"items"`
+	NextCursor *string    `json:"next_cursor"`
+}
+
+// List returns a page of a project's incidents, newest last_seen_at first.
+// The raw query values are checked in this order: project visible to orgID
+// (ErrProjectNotFound), then status, limit and cursor (each an *httpx.Error).
+func (s Service) List(ctx context.Context, orgID, projectID, status, limit, cursor string) (Page, error) {
+	if err := tenancy.ProjectInOrg(ctx, s.Pool, orgID, projectID); err != nil {
+		if errors.Is(err, tenancy.ErrNotFound) {
+			return Page{}, ErrProjectNotFound
+		}
+		return Page{}, err
+	}
+	if status != "" && status != domain.IncidentOpen && status != domain.IncidentResolved {
+		return Page{}, badRequest("invalid_status", "status must be open or resolved")
+	}
+	n := DefaultListLimit
+	if limit != "" {
+		v, err := strconv.Atoi(limit)
+		if err != nil || v < 1 || v > MaxListLimit {
+			return Page{}, badRequest("invalid_limit", "limit must be an integer from 1 to 100")
+		}
+		n = v
+	}
+	var after *listCursor
+	if cursor != "" {
+		c, ok := decodeCursor(cursor)
+		if !ok {
+			return Page{}, badRequest("invalid_cursor", "cursor is not a value returned as next_cursor")
+		}
+		after = &c
+	}
+
+	rows, err := listIncidents(ctx, s.Pool, orgID, projectID, status, after, n+1)
+	if err != nil {
+		return Page{}, err
+	}
+	page := Page{Items: make([]ListItem, 0, min(len(rows), n))}
+	for i, r := range rows {
+		if i == n {
+			last := rows[n-1]
+			next := encodeCursor(listCursor{LastSeenAt: last.LastSeenAt, ID: last.ID})
+			page.NextCursor = &next
+			break
+		}
+		page.Items = append(page.Items, ListItem{
+			ID: r.ID, Status: r.Status, Severity: r.Severity, Title: r.Title,
+			Component:   ListComponent{Slug: r.ComponentSlug, DisplayName: r.ComponentName},
+			Environment: r.Environment, FirstSeenAt: r.FirstSeenAt.UTC(), LastSeenAt: r.LastSeenAt.UTC(),
+		})
+	}
+	return page, nil
+}
+
+func badRequest(code, message string) *httpx.Error {
+	return &httpx.Error{Status: http.StatusBadRequest, Code: code, Message: message}
+}
+
+// A cursor is base64url (unpadded) of "<RFC 3339 nano last_seen_at>|<id>".
+func encodeCursor(c listCursor) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(c.LastSeenAt.UTC().Format(time.RFC3339Nano) + "|" + c.ID))
+}
+
+func decodeCursor(s string) (listCursor, bool) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return listCursor{}, false
+	}
+	at, id, ok := strings.Cut(string(raw), "|")
+	if !ok || !httpx.IsUUID(id) {
+		return listCursor{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil {
+		return listCursor{}, false
+	}
+	return listCursor{LastSeenAt: t, ID: id}, true
 }
