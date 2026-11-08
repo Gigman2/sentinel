@@ -9,6 +9,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
 
+	"github.com/Gigman2/sentinel/backend/api/internal/auth"
+	"github.com/Gigman2/sentinel/backend/api/internal/modules/incidents"
+	"github.com/Gigman2/sentinel/backend/api/internal/modules/ingest"
 	"github.com/Gigman2/sentinel/backend/api/internal/platform/httpx"
 )
 
@@ -53,6 +56,17 @@ func New(d Deps) http.Handler {
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+
+	user := auth.RequireUser(d.Pool, d.Logger)
+
+	// Integrations authenticate with their own credential, not a user token.
+	mux.Handle("POST /v1/ingest/{integrationId}/events", ingest.Handler{
+		Service: ingest.Service{Pool: d.Pool, Now: d.Now},
+		Log:     d.Logger,
+	})
+
+	inc := incidents.Handlers{Service: incidents.Service{DB: d.Pool}, Log: d.Logger}
+	mux.Handle("GET /v1/incidents/{incidentId}", user(http.HandlerFunc(inc.Get)))
 
 	return httpx.RequestID(mux)
 }
