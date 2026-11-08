@@ -2,6 +2,8 @@
 // The database CHECK constraints and the Python worker use the same values.
 package domain
 
+import "time"
+
 // Event types accepted by the generic webhook (schema_version "1").
 const (
 	EventAlertTriggered      = "alert.triggered"
@@ -63,3 +65,25 @@ const (
 	UserTokenPrefix        = "sk_usr_"
 	IntegrationTokenPrefix = "sk_int_"
 )
+
+// Event is a normalized, accepted operational event. Organization, project
+// and component come from the authenticated integration and its mapping,
+// never from the payload.
+type Event struct {
+	ID             string
+	OrganizationID string
+	ProjectID      string
+	IntegrationID  string
+	ComponentID    string
+	Environment    string
+	Type           string
+	SourceEventID  string
+	Severity       string
+	Fingerprint    string
+	Summary        string
+	SourceURL      string
+	OccurredAt     time.Time
+	ReceivedAt     time.Time
+	Attributes     map[string]any
+	Details        map[string]any
+}
