@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Gigman2/sentinel/backend/api/internal/domain"
+	"github.com/Gigman2/sentinel/backend/api/internal/modules/analysis"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/tenancy"
 	"github.com/Gigman2/sentinel/backend/api/internal/platform/httpx"
 )
@@ -59,20 +60,21 @@ type Resolution struct {
 
 // Incident is the engineer-facing view of an incident.
 type Incident struct {
-	ID             string      `json:"id"`
-	ProjectID      string      `json:"project_id"`
-	Component      Component   `json:"component"`
-	Environment    string      `json:"environment"`
-	Fingerprint    string      `json:"fingerprint"`
-	Status         string      `json:"status"`
-	Severity       string      `json:"severity"`
-	Title          string      `json:"title"`
-	FirstSeenAt    time.Time   `json:"first_seen_at"`
-	LastSeenAt     time.Time   `json:"last_seen_at"`
-	EvidenceWindow Window      `json:"evidence_window"`
-	ResolvedAt     *time.Time  `json:"resolved_at"`
-	Resolution     *Resolution `json:"resolution"`
-	TriggerEventID string      `json:"trigger_event_id"`
+	ID             string        `json:"id"`
+	ProjectID      string        `json:"project_id"`
+	Component      Component     `json:"component"`
+	Environment    string        `json:"environment"`
+	Fingerprint    string        `json:"fingerprint"`
+	Status         string        `json:"status"`
+	Severity       string        `json:"severity"`
+	Title          string        `json:"title"`
+	FirstSeenAt    time.Time     `json:"first_seen_at"`
+	LastSeenAt     time.Time     `json:"last_seen_at"`
+	EvidenceWindow Window        `json:"evidence_window"`
+	ResolvedAt     *time.Time    `json:"resolved_at"`
+	Resolution     *Resolution   `json:"resolution"`
+	TriggerEventID string        `json:"trigger_event_id"`
+	Analysis       analysis.View `json:"analysis"`
 }
 
 // Resolution sources.
@@ -102,12 +104,24 @@ type Service struct {
 	Now  func() time.Time
 }
 
-// Get returns an incident visible to orgID, or ErrNotFound.
+// Get returns an incident visible to orgID, with its analysis, or
+// ErrNotFound. Both are read in one REPEATABLE READ READ ONLY transaction so
+// they come from the same snapshot.
 func (s Service) Get(ctx context.Context, orgID, incidentID string) (Incident, error) {
-	r, err := incidentInOrg(ctx, s.Pool, orgID, incidentID)
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Incident{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	r, err := incidentInOrg(ctx, tx, orgID, incidentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Incident{}, ErrNotFound
 	}
+	if err != nil {
+		return Incident{}, err
+	}
+	view, err := analysis.Read(ctx, tx, incidentID)
 	if err != nil {
 		return Incident{}, err
 	}
@@ -126,6 +140,7 @@ func (s Service) Get(ctx context.Context, orgID, incidentID string) (Incident, e
 		LastSeenAt:     r.LastSeenAt.UTC(),
 		EvidenceWindow: Window{Start: start, End: end},
 		TriggerEventID: r.TriggerEventID,
+		Analysis:       view,
 	}
 	if r.ResolvedAt != nil {
 		t := r.ResolvedAt.UTC()

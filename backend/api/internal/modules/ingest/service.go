@@ -15,6 +15,7 @@ import (
 
 	"github.com/Gigman2/sentinel/backend/api/internal/auth"
 	"github.com/Gigman2/sentinel/backend/api/internal/domain"
+	"github.com/Gigman2/sentinel/backend/api/internal/modules/analysis"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/incidents"
 )
 
@@ -136,10 +137,15 @@ func (s Service) Accept(ctx context.Context, in Integration, e Envelope) (Result
 			return Result{}, err
 		}
 		result.Disposition, result.IncidentID = domain.DispositionIncidentAttached, &incidentID
+		reason := analysis.ReasonRepeatTrigger
 		if created {
-			result.Disposition = domain.DispositionIncidentCreated
+			result.Disposition, reason = domain.DispositionIncidentCreated, analysis.ReasonIncidentCreated
+		}
+		if err := s.enqueue(ctx, tx, reason, incidentID); err != nil {
+			return Result{}, err
 		}
 	case domain.EventAlertResolved:
+		// A resolution changes no evidence, so it enqueues no analysis.
 		incidentID, matched, err := incidents.ApplyAlertResolved(ctx, tx, ev)
 		if err != nil {
 			return Result{}, err
@@ -149,9 +155,13 @@ func (s Service) Accept(ctx context.Context, in Integration, e Envelope) (Result
 			result.Disposition, result.IncidentID = domain.DispositionIncidentResolved, &incidentID
 		}
 	default:
-		// Evidence never opens an incident; it is linked to every incident
-		// whose window contains it. (Reanalysis of those incidents: Task 8.)
-		if _, err := incidents.LinkEvidenceEvent(ctx, tx, ev); err != nil {
+		// Evidence never opens an incident. It is linked to every incident
+		// whose window contains it, and each of those is reanalyzed.
+		linked, err := incidents.LinkEvidenceEvent(ctx, tx, ev)
+		if err != nil {
+			return Result{}, err
+		}
+		if err := s.enqueue(ctx, tx, analysis.ReasonLateEvent, linked...); err != nil {
 			return Result{}, err
 		}
 		result.Disposition = initialDisposition(ev.Type)
@@ -164,6 +174,27 @@ func (s Service) Accept(ctx context.Context, in Integration, e Envelope) (Result
 }
 
 var errDuplicate = errors.New("duplicate source_event_id")
+
+// afterEnqueue, when set, runs inside the ingest transaction after analysis
+// jobs are enqueued; an error rolls everything back. Only tests set it (see
+// export_test.go), and tests that set it must not run in parallel.
+var afterEnqueue func() error
+
+// enqueue makes sure each incident has a pending analysis job, in order.
+func (s Service) enqueue(ctx context.Context, tx pgx.Tx, reason string, incidentIDs ...string) error {
+	if len(incidentIDs) == 0 {
+		return nil
+	}
+	for _, id := range incidentIDs {
+		if _, err := analysis.Enqueue(ctx, tx, id, reason); err != nil {
+			return err
+		}
+	}
+	if afterEnqueue != nil {
+		return afterEnqueue()
+	}
+	return nil
+}
 
 // initialDisposition is what an event is stored with. Alert events
 // (triggered and resolved) get their final disposition from the incidents
