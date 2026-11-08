@@ -14,8 +14,8 @@ down:
 test-api: db
 	cd backend/api && go vet ./... && SENTINEL_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -count=1 ./...
 
-## test-worker: run the Python worker's tests
-test-worker:
+## test-worker: run the Python worker's tests against local PostgreSQL
+test-worker: db
 	cd backend/worker && SENTINEL_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' uv run pytest -q -W error
 
 ## test: run every test suite
