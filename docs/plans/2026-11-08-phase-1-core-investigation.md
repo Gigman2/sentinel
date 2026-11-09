@@ -547,6 +547,8 @@ finding_evidence(finding_id FK, event_id FK operational_events, PRIMARY KEY(find
 
 ### Task 11: Engineer view (React + Vite) — PR `feat/p1-11-frontend`
 
+> **Superseded (9 Nov 2026):** Task 11 is replaced by `2026-11-09-phase-1-ledger-ui.md` (Tasks 11–16, built to the Ledger design). Task 12 below runs after them, as Task 17.
+
 **Files:**
 - Create: `frontend/package.json` (exact versions: `react@18.3.1`, `react-dom@18.3.1`, `vite@5.4.10`, `@vitejs/plugin-react@4.3.3`, `typescript@5.6.3`, `vitest@2.1.4`, `@testing-library/react@16.0.1`, `@testing-library/jest-dom@6.6.3`, `jsdom@25.0.1`), `package-lock.json`, `vite.config.ts` (dev proxy `/v1` and `/healthz` → `http://127.0.0.1:8080`; Vitest `environment: "jsdom"`), `tsconfig.json`, `index.html`, `src/main.tsx`, `src/App.tsx` (hash router: `#/` and `#/incidents/:id`), `src/api.ts`, `src/format.ts`, `src/views/{TokenPrompt,IncidentList,IncidentDetail}.tsx`, `src/components/{Findings,Timeline,AnalysisBanner,ResolveForm}.tsx`, `src/styles.css`
 - Test: `src/format.test.ts`, `src/components/Findings.test.tsx`, `src/views/IncidentDetail.test.tsx`, `src/wording.test.ts`
