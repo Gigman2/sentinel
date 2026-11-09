@@ -18,6 +18,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate docker-compose.yml
         run: docker compose config --quiet
+      - name: Test shell helpers
+        run: ./scripts/test-load-env.sh
 
   api:
     name: Backend API (Go)
