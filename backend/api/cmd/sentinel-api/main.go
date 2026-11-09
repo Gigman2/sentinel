@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,8 +23,8 @@ const usage = `usage: sentinel-api <command>
 commands:
   migrate      apply pending database migrations (reads DATABASE_URL)
   seed         create or reconcile the demo tenant (reads DATABASE_URL, SEED_* variables)
-  serve        run the HTTP API (reads DATABASE_URL, ADDR; default :8080)
-  healthcheck  exit 0 if the local API answers /healthz (for container healthchecks)`
+  serve        run the HTTP API (reads DATABASE_URL, HOST, PORT; default port 8080 on all interfaces)
+  healthcheck  exit 0 if the local API answers /healthz (reads PORT; for container healthchecks)`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -87,6 +88,17 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
+// listenAddr is HOST:PORT. An empty HOST listens on all interfaces; PORT
+// defaults to 8080.
+func listenAddr() string {
+	return net.JoinHostPort(os.Getenv("HOST"), getenv("PORT", "8080"))
+}
+
+// healthURL is the API's /healthz on the loopback interface, at PORT.
+func healthURL() string {
+	return "http://" + net.JoinHostPort("127.0.0.1", getenv("PORT", "8080")) + "/healthz"
+}
+
 func runSeed(ctx context.Context) error {
 	dsn, err := databaseURL()
 	if err != nil {
@@ -137,7 +149,7 @@ func runServe(ctx context.Context) error {
 	defer pool.Close()
 
 	srv := &http.Server{
-		Addr:              getenv("ADDR", ":8080"),
+		Addr:              listenAddr(),
 		Handler:           server.New(server.Deps{Pool: pool, Logger: logger, Now: time.Now}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -175,7 +187,7 @@ func runServe(ctx context.Context) error {
 func runHealthcheck(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1"+getenv("ADDR", ":8080")+"/healthz", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL(), nil)
 	if err != nil {
 		return err
 	}

@@ -3,7 +3,7 @@
 # Ctrl-C stops the API and the worker; PostgreSQL keeps running (`make down`).
 #
 # Settings come from the environment, then from a git-ignored .env at the
-# repo root if present. To keep the same tokens across runs, set
+# repo root if present (see .env.example). To keep the same tokens across runs, set
 # SEED_ADMIN_TOKEN, SEED_MONITOR_TOKEN and SEED_DEPLOY_TOKEN there; otherwise
 # tokens are generated and printed once, on the first run against a fresh
 # database.
@@ -20,7 +20,8 @@ if [[ -f .env ]]; then
 fi
 
 export DATABASE_URL="${DATABASE_URL:-postgres://sentinel:sentinel@localhost:5432/sentinel?sslmode=disable}"
-export ADDR="${ADDR:-127.0.0.1:8080}"
+export HOST="${HOST:-127.0.0.1}"
+export PORT="${PORT:-8080}"
 
 echo "==> starting PostgreSQL"
 docker compose up -d --wait postgres
@@ -53,7 +54,7 @@ pids+=($!)
 (cd backend/worker && exec uv run --quiet python -m sentinel_worker.main) &
 pids+=($!)
 
-echo "==> API on http://$ADDR, worker running. Ctrl-C to stop."
+echo "==> API on http://$HOST:$PORT, worker running. Ctrl-C to stop."
 
 # Stop everything if either process exits on its own.
 while kill -0 "${pids[0]}" 2>/dev/null && kill -0 "${pids[1]}" 2>/dev/null; do

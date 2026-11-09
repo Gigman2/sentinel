@@ -49,7 +49,7 @@ Migrations live in `migrations/NNNN_name.sql` with `-- +goose Up` and `-- +goose
 export DATABASE_URL='postgres://sentinel:sentinel@localhost:5432/sentinel?sslmode=disable'
 go run ./cmd/sentinel-api migrate
 go run ./cmd/sentinel-api seed     # prints generated tokens once; set SEED_*_TOKEN to supply your own
-go run ./cmd/sentinel-api serve    # ADDR defaults to :8080; GET /healthz
+go run ./cmd/sentinel-api serve    # listens on HOST:PORT (default :8080); GET /healthz
 ```
 
 `seed` reads `SEED_ORG_SLUG`, `SEED_ORG_NAME`, `SEED_ADMIN_EMAIL`, `SEED_ADMIN_TOKEN`, `SEED_MONITOR_TOKEN` and `SEED_DEPLOY_TOKEN`. It is safe to re-run: it reconciles the admin role, integration capabilities and mappings, and it only replaces a credential when you supply a token.
