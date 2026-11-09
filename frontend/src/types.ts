@@ -1,0 +1,104 @@
+// Shapes returned by the Sentinel API (backend/api/internal/modules/*).
+
+export type Severity = "info" | "warning" | "error" | "critical";
+export type IncidentStatus = "open" | "resolved";
+export type AnalysisStatus = "none" | "pending" | "running" | "succeeded" | "failed";
+export type FindingKind = "observation" | "hypothesis" | "unknown" | "next_check";
+export type EventType = "alert.triggered" | "alert.resolved" | "error.observed" | "deployment.completed";
+export type LinkReason = "trigger" | "repeat_trigger" | "resolution" | "same_component_time_window";
+
+export interface Project {
+  id: string;
+  slug: string;
+  name: string;
+  created_at: string;
+}
+
+export interface ComponentRef {
+  id?: string;
+  slug: string;
+  display_name: string;
+}
+
+export interface IncidentListItem {
+  id: string;
+  status: IncidentStatus;
+  severity: Severity | "";
+  title: string;
+  component: ComponentRef;
+  environment: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  // Added by Task 12; optional until then.
+  number?: number;
+  analysis_status?: AnalysisStatus;
+  signal_count?: number;
+  resolution_note?: string | null;
+}
+
+export interface Page<T> {
+  items: T[];
+  next_cursor: string | null;
+}
+
+export interface Finding {
+  kind: FindingKind;
+  rule_id: string;
+  text: string;
+  limitations: string | null;
+  evidence_ids: string[];
+}
+
+export interface Revision {
+  id: string;
+  revision_number: number;
+  created_at: string;
+  findings: Finding[];
+}
+
+export interface Analysis {
+  status: AnalysisStatus;
+  last_error: string | null;
+  latest_revision: Revision | null;
+}
+
+export interface Incident {
+  id: string;
+  project_id: string;
+  component: ComponentRef;
+  environment: string;
+  fingerprint: string;
+  status: IncidentStatus;
+  severity: Severity | "";
+  title: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  evidence_window: { start: string; end: string };
+  resolved_at: string | null;
+  resolution: { source: "alert" | "manual"; note: string | null } | null;
+  trigger_event_id: string;
+  analysis: Analysis;
+}
+
+export interface TimelineItem {
+  event_id: string;
+  type: EventType;
+  occurred_at: string;
+  received_at: string;
+  summary: string;
+  severity: string | null;
+  source_url: string | null;
+  link_reason: LinkReason;
+  attributes: Record<string, unknown>;
+  details: Record<string, unknown>;
+}
+
+export interface Integration {
+  id: string;
+  project_id: string;
+  name: string;
+  capability: "incident_input" | "change_source";
+  enabled: boolean;
+  created_at: string;
+  mappings: { id: string; external_component_id: string; environment: string; component_id: string }[];
+}
