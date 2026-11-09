@@ -1,4 +1,4 @@
-.PHONY: db down run test test-api test-worker
+.PHONY: db down run test test-api test-worker test-scripts
 
 TEST_DATABASE_URL ?= postgres://sentinel:sentinel@localhost:5432/postgres?sslmode=disable
 
@@ -22,5 +22,9 @@ test-api: db
 test-worker: db
 	cd backend/worker && SENTINEL_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' uv run pytest -q -W error
 
+## test-scripts: test the shell helpers used by make run
+test-scripts:
+	./scripts/test-load-env.sh
+
 ## test: run every test suite
-test: test-api test-worker
+test: test-scripts test-api test-worker
