@@ -154,8 +154,8 @@ integration_component_mappings(id, integration_id FK ON DELETE CASCADE, external
     - integration `deploys` (`change_source`), with mapping `payment-service→payment-service`
   - `server.Deps{Pool; Logger *slog.Logger; Now func() time.Time; IngestRate rate.Limit; IngestBurst int}`. `server.New(d Deps) http.Handler` treats a zero `IngestRate`/`IngestBurst` as 20/40. `GET /healthz` returns 200 `{"status":"ok"}`, or 503 `database_unavailable`.
   - `sentinel-api seed` reads `SEED_ADMIN_TOKEN`, `SEED_MONITOR_TOKEN` and `SEED_DEPLOY_TOKEN`. It prints IDs, and prints tokens only when it generated them.
-  - `sentinel-api serve` reads `DATABASE_URL` and `ADDR` (default `:8080`). It sets `ReadHeaderTimeout` 10s, `ReadTimeout` 30s, `WriteTimeout` 30s and `IdleTimeout` 120s, and logs JSON. On SIGINT/SIGTERM it calls `Shutdown` and waits for the drain to finish before closing the pool, on every exit path.
-  - `sentinel-api healthcheck` GETs `http://127.0.0.1:8080/healthz` and exits 0 or 1.
+  - `sentinel-api serve` reads `DATABASE_URL`, `HOST` and `PORT` (default `:8080`, all interfaces). It sets `ReadHeaderTimeout` 10s, `ReadTimeout` 30s, `WriteTimeout` 30s and `IdleTimeout` 120s, and logs JSON. On SIGINT/SIGTERM it calls `Shutdown` and waits for the drain to finish before closing the pool, on every exit path.
+  - `sentinel-api healthcheck` GETs `http://127.0.0.1:$PORT/healthz` (`PORT` default 8080) and exits 0 or 1.
 
 - [ ] **Step 1: Write failing tests:**
   - `TestNewToken_PrefixAndHash`
