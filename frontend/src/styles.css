@@ -1175,9 +1175,13 @@ a:focus-visible,
     flex: 1 1 100%;
   }
   .nav-group {
+    flex: 1 1 100%;
     flex-direction: row;
+    flex-wrap: wrap;
     gap: 4px;
+    min-width: 0;
   }
+  .nav-group .nav-kbd,
   .nav-heading,
   .sidebar-spacer,
   .appearance .lbl {
@@ -1229,4 +1233,112 @@ a:focus-visible,
     grid-template-columns: 58px 22px minmax(0, 1fr);
     column-gap: 8px;
   }
+}
+
+/* ---------- List filters (Task 12) ---------- */
+
+.filter-select {
+  padding: 0 4px 0 10px;
+  gap: 4px;
+}
+.filter-label {
+  color: var(--fg3);
+  font-weight: 400;
+}
+.filter-select select {
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  max-width: 160px;
+}
+.filter-select:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---------- Search dialog ---------- */
+
+.search-dialog {
+  align-self: flex-start;
+  margin-top: 12vh;
+  width: min(560px, calc(100vw - 32px));
+}
+.search-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg3);
+}
+.search-input input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.search-results {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.search-result {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--fg);
+  text-decoration: none;
+}
+.search-result:hover,
+.search-result:focus-visible,
+.search-result[aria-selected="true"] {
+  background: var(--surface2);
+}
+.search-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-note {
+  padding: 14px 16px;
+  color: var(--fg3);
+  font-size: 12.5px;
+}
+.nav-kbd {
+  font-size: 11px;
+  color: var(--fg3);
+}
+button.nav {
+  width: 100%;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+}
+
+/* ---------- Alerts page ---------- */
+
+.signal-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.srow {
+  cursor: default;
+}
+.nowrap {
+  white-space: nowrap;
 }

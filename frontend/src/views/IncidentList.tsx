@@ -1,49 +1,91 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, apiFetch, describeError } from "../api";
 import { Dot } from "../components/Dot";
 import { SeverityChip } from "../components/SeverityChip";
 import { StatusIcon } from "../components/StatusIcon";
-import { relative, shortId, whenSeen } from "../format";
+import { anyFilter, filtersHash, NO_FILTERS, sinceFor, type ListFilters, type RangeFilter, type StatusFilter } from "../filters";
+import { capitalise, relative, shortId, whenSeen } from "../format";
 import { ANALYSIS_LABEL, ANALYSIS_TONE } from "../labels";
-import type { IncidentListItem, Page } from "../types";
+import type { IncidentListItem, IncidentPage, ProjectComponent, Severity } from "../types";
 
-type StatusFilter = "all" | "open" | "resolved";
-
-const FILTERS: [StatusFilter, string][] = [
+const STATUS_OPTIONS: [StatusFilter, string][] = [
   ["all", "All"],
   ["open", "Open"],
   ["resolved", "Resolved"],
 ];
+const SEVERITY_OPTIONS: Severity[] = ["critical", "error", "warning", "info"];
+const RANGE_OPTIONS: [RangeFilter, string][] = [
+  ["", "Any time"],
+  ["24h", "Last 24 hours"],
+  ["7d", "Last 7 days"],
+  ["30d", "Last 30 days"],
+];
 
-/** Incidents in the project, newest first, grouped into open and resolved. */
-export function IncidentList({ projectId, onOpenCount }: { projectId: string; onOpenCount: (count: string | null) => void }) {
-  const [filter, setFilter] = useState<StatusFilter>("all");
+/** Incidents in the project, newest first, grouped into open and resolved.
+ * Filters live in the URL; changing one navigates to the new hash. */
+export function IncidentList({
+  projectId,
+  filters = NO_FILTERS,
+  onOpenCount,
+}: {
+  projectId: string;
+  filters?: ListFilters;
+  onOpenCount: (count: number) => void;
+}) {
   const [items, setItems] = useState<IncidentListItem[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "more" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [components, setComponents] = useState<string[]>([]);
+  const [openCount, setOpenCount] = useState(0);
+  const { status, severity, component, range } = filters;
+
+  // The range's start is fixed when the filters change, so "Load more"
+  // pages through the same window.
+  const since = useMemo(() => sinceFor(range, new Date()), [range, attempt]);
 
   const query = useCallback(
     (after: string | null) => {
       const q = new URLSearchParams({ limit: "50" });
-      if (filter !== "all") q.set("status", filter);
+      if (status !== "all") q.set("status", status);
+      if (severity) q.set("severity", severity);
+      if (component) q.set("component", component);
+      if (since) q.set("since", since);
       if (after) q.set("cursor", after);
       return `/v1/projects/${projectId}/incidents?${q}`;
     },
-    [projectId, filter],
+    [projectId, status, severity, component, since],
   );
+
+  const setFilter = (change: Partial<ListFilters>) => {
+    window.location.hash = filtersHash({ ...filters, ...change });
+  };
+
+  useEffect(() => {
+    let active = true;
+    apiFetch<{ items: ProjectComponent[] }>("GET", `/v1/projects/${projectId}/components`)
+      .then((r) => active && setComponents([...new Set(r.items.map((c) => c.slug))].sort()))
+      .catch(() => {
+        // The filter falls back to the slug in the URL, if any.
+      });
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
 
   useEffect(() => {
     let active = true;
     setState("loading");
     setItems([]);
     setCursor(null);
-    apiFetch<Page<IncidentListItem>>("GET", query(null))
+    apiFetch<IncidentPage>("GET", query(null))
       .then((page) => {
         if (!active) return;
         setItems(page.items);
         setCursor(page.next_cursor);
+        setOpenCount(page.open_count);
+        onOpenCount(page.open_count);
         setState("ready");
       })
       .catch((e) => {
@@ -56,19 +98,11 @@ export function IncidentList({ projectId, onOpenCount }: { projectId: string; on
     };
   }, [query, attempt]);
 
-  // Until the API reports a project-wide open count (Task 12), count the
-  // open incidents that are loaded; "+" means more pages exist.
-  const open = items.filter((i) => i.status === "open").length;
-  useEffect(() => {
-    if (state !== "ready" || filter === "resolved") return;
-    onOpenCount(`${open}${cursor ? "+" : ""}`);
-  }, [state, filter, open, cursor, onOpenCount]);
-
   async function loadMore() {
     if (!cursor) return;
     setState("more");
     try {
-      const page = await apiFetch<Page<IncidentListItem>>("GET", query(cursor));
+      const page = await apiFetch<IncidentPage>("GET", query(cursor));
       setItems((prev) => [...prev, ...page.items]);
       setCursor(page.next_cursor);
       setState("ready");
@@ -79,9 +113,8 @@ export function IncidentList({ projectId, onOpenCount }: { projectId: string; on
     }
   }
 
-  const showAnalysis = items.some((i) => i.analysis_status !== undefined);
-  const showSignals = items.some((i) => i.signal_count !== undefined);
-  const cols = ["16px", "76px", "minmax(160px,1fr)", "108px", showAnalysis && "150px", showSignals && "92px", "96px"].filter(Boolean).join(" ");
+  const cols = "16px 64px minmax(160px,1fr) 108px 120px 92px 96px";
+  const componentOptions = component && !components.includes(component) ? [component, ...components] : components;
   const groups = (["open", "resolved"] as const)
     .map((status) => ({ status, label: status === "open" ? "Open" : "Resolved", rows: items.filter((i) => i.status === status) }))
     .filter((g) => g.rows.length > 0);
@@ -103,7 +136,7 @@ export function IncidentList({ projectId, onOpenCount }: { projectId: string; on
         {state === "ready" && (
           <span className="muted">
             {items.length}
-            {cursor ? "+" : ""} shown · {open} open
+            {cursor ? "+" : ""} shown · {openCount} open
           </span>
         )}
         <span className="grow" />
@@ -112,12 +145,49 @@ export function IncidentList({ projectId, onOpenCount }: { projectId: string; on
 
       <div className="filters">
         <div className="seg" role="group" aria-label="Status">
-          {FILTERS.map(([k, label]) => (
-            <button key={k} type="button" className={`seg-btn${filter === k ? " seg-on" : ""}`} aria-pressed={filter === k} onClick={() => setFilter(k)}>
+          {STATUS_OPTIONS.map(([k, label]) => (
+            <button key={k} type="button" className={`seg-btn${status === k ? " seg-on" : ""}`} aria-pressed={status === k} onClick={() => setFilter({ status: k })}>
               {label}
             </button>
           ))}
         </div>
+        <label className="btn filter-select">
+          <span className="filter-label">Severity</span>
+          <select value={severity} onChange={(e) => setFilter({ severity: e.target.value as Severity | "" })}>
+            <option value="">All</option>
+            {SEVERITY_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {capitalise(s)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="btn filter-select">
+          <span className="filter-label">Component</span>
+          <select value={component} onChange={(e) => setFilter({ component: e.target.value })}>
+            <option value="">All</option>
+            {componentOptions.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="btn filter-select">
+          <span className="filter-label">Range</span>
+          <select value={range} onChange={(e) => setFilter({ range: e.target.value as RangeFilter })}>
+            {RANGE_OPTIONS.map(([k, label]) => (
+              <option key={k} value={k}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {anyFilter(filters) && (
+          <a href="#/" className="ghost small">
+            Clear filters
+          </a>
+        )}
       </div>
 
       <div className="table-scroll">
@@ -128,8 +198,8 @@ export function IncidentList({ projectId, onOpenCount }: { projectId: string; on
               <span role="columnheader">ID</span>
               <span role="columnheader">Incident</span>
               <span role="columnheader">Severity</span>
-              {showAnalysis && <span role="columnheader">Analysis</span>}
-              {showSignals && <span role="columnheader">Signals</span>}
+              <span role="columnheader">Analysis</span>
+              <span role="columnheader">Signals</span>
               <span role="columnheader" className="right">
                 Last seen
               </span>
@@ -178,21 +248,13 @@ export function IncidentList({ projectId, onOpenCount }: { projectId: string; on
                     <span role="cell">
                       <SeverityChip severity={r.severity} muted={r.status !== "open"} />
                     </span>
-                    {showAnalysis && (
-                      <span role="cell" className="inline-dot muted-2">
-                        {r.analysis_status && (
-                          <>
-                            <Dot color={ANALYSIS_TONE[r.analysis_status]} />
-                            {ANALYSIS_LABEL[r.analysis_status]}
-                          </>
-                        )}
-                      </span>
-                    )}
-                    {showSignals && (
-                      <span role="cell" className="muted-2">
-                        <span className="mono fg">{r.signal_count ?? "–"}</span> {(r.signal_count ?? 0) > 1 ? "grouped" : "signal"}
-                      </span>
-                    )}
+                    <span role="cell" className="inline-dot muted-2">
+                      <Dot color={ANALYSIS_TONE[r.analysis_status]} />
+                      {ANALYSIS_LABEL[r.analysis_status]}
+                    </span>
+                    <span role="cell" className="muted-2">
+                      <span className="mono fg">{r.signal_count}</span> {r.signal_count > 1 ? "grouped" : "signal"}
+                    </span>
                     <span role="cell" className="icell-time">
                       <span className="mono small" title={r.last_seen_at}>
                         {whenSeen(r.last_seen_at, now)}

@@ -22,6 +22,25 @@ afterEach(() => {
 });
 
 describe("incident detail", () => {
+  it("shows the incident number and who recorded the cause", async () => {
+    mockFetch({
+      "GET /v1/projects": () => projects,
+      "GET /v1/projects/p-1/incidents": () => ({ items: [], next_cursor: null, open_count: 0 }),
+      [`GET ${detailPath}`]: () =>
+        referenceIncident({
+          status: "resolved",
+          resolved_at: "2026-11-09T14:40:00Z",
+          resolution: { source: "manual", note: "Connection pool exhausted after 1.8.4" },
+          resolved_by: { id: "u-1", display_name: "Ama Owusu" },
+        }),
+      [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+    });
+    render(<App />);
+    expect(await screen.findByText("INC-42")).toBeInTheDocument();
+    expect(screen.getByText(/Resolved by Ama Owusu/)).toBeInTheDocument();
+    expect(screen.getByText("Connection pool exhausted after 1.8.4")).toBeInTheDocument();
+  });
+
   it("shows properties, findings and the timeline in order", async () => {
     mockFetch({
       "GET /v1/projects": () => projects,

@@ -47,7 +47,8 @@ func (h Handlers) Resolve(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, r, rej)
 		return
 	}
-	inc, err := h.Service.Resolve(r.Context(), auth.PrincipalFrom(r.Context()).OrganizationID, id, body.Note)
+	p := auth.PrincipalFrom(r.Context())
+	inc, err := h.Service.Resolve(r.Context(), p.OrganizationID, p.UserID, id, body.Note)
 	var rej *httpx.Error
 	switch {
 	case errors.As(err, &rej):
@@ -67,7 +68,23 @@ func (h Handlers) Resolve(w http.ResponseWriter, r *http.Request) {
 func (h Handlers) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	page, err := h.Service.List(r.Context(), auth.PrincipalFrom(r.Context()).OrganizationID,
-		r.PathValue("projectId"), q.Get("status"), q.Get("limit"), q.Get("cursor"))
+		r.PathValue("projectId"), ListQuery{
+			Status: q.Get("status"), Severity: q.Get("severity"), Component: q.Get("component"),
+			Since: q.Get("since"), Q: q.Get("q"), Limit: q.Get("limit"), Cursor: q.Get("cursor"),
+		})
+	h.respondProject(w, r, "list incidents", page, err)
+}
+
+// Signals handles GET /v1/projects/{projectId}/signals.
+func (h Handlers) Signals(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	page, err := h.Service.Signals(r.Context(), auth.PrincipalFrom(r.Context()).OrganizationID,
+		r.PathValue("projectId"), q.Get("limit"), q.Get("cursor"))
+	h.respondProject(w, r, "list signals", page, err)
+}
+
+// respondProject writes the result of a project-scoped read.
+func (h Handlers) respondProject(w http.ResponseWriter, r *http.Request, what string, page any, err error) {
 	var rej *httpx.Error
 	switch {
 	case errors.As(err, &rej):
@@ -75,7 +92,7 @@ func (h Handlers) List(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrProjectNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, "not_found", "no matching project found")
 	case err != nil:
-		h.unavailable(w, r, "list incidents", err)
+		h.unavailable(w, r, what, err)
 	default:
 		httpx.WriteJSON(w, http.StatusOK, page)
 	}

@@ -6,6 +6,7 @@ export type AnalysisStatus = "none" | "pending" | "running" | "succeeded" | "fai
 export type FindingKind = "observation" | "hypothesis" | "unknown" | "next_check";
 export type EventType = "alert.triggered" | "alert.resolved" | "error.observed" | "deployment.completed";
 export type LinkReason = "trigger" | "repeat_trigger" | "resolution" | "same_component_time_window";
+export type Disposition = "incident_created" | "incident_attached" | "incident_resolved" | "unmatched_resolution" | "evidence";
 
 export interface Project {
   id: string;
@@ -29,16 +30,42 @@ export interface IncidentListItem {
   environment: string;
   first_seen_at: string;
   last_seen_at: string;
-  // Added by Task 12; optional until then.
-  number?: number;
-  analysis_status?: AnalysisStatus;
-  signal_count?: number;
-  resolution_note?: string | null;
+  number: number;
+  analysis_status: AnalysisStatus;
+  signal_count: number;
+  resolution_note: string | null;
 }
 
 export interface Page<T> {
   items: T[];
   next_cursor: string | null;
+}
+
+export interface IncidentPage extends Page<IncidentListItem> {
+  /** Open incidents in the project, whatever the filters. */
+  open_count: number;
+}
+
+export interface ProjectComponent {
+  id: string;
+  slug: string;
+  display_name: string;
+  environment: string;
+}
+
+/** An alert received for a project, and what grouping did with it. */
+export interface Signal {
+  event_id: string;
+  type: "alert.triggered" | "alert.resolved";
+  occurred_at: string;
+  received_at: string;
+  summary: string;
+  severity: Severity | null;
+  component: ComponentRef;
+  environment: string;
+  disposition: Disposition;
+  incident: { id: string; number: number } | null;
+  source_url: string | null;
 }
 
 export interface Finding {
@@ -64,6 +91,7 @@ export interface Analysis {
 
 export interface Incident {
   id: string;
+  number: number;
   project_id: string;
   component: ComponentRef;
   environment: string;
@@ -76,7 +104,9 @@ export interface Incident {
   evidence_window: { start: string; end: string };
   resolved_at: string | null;
   resolution: { source: "alert" | "manual"; note: string | null } | null;
+  resolved_by: { id: string; display_name: string } | null;
   trigger_event_id: string;
+  signal_count: number;
   analysis: Analysis;
 }
 
