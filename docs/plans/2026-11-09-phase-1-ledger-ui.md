@@ -17,7 +17,6 @@
 **Spec:**
 - **Product scope:** `docs/scope/Sentinel_PRD.md` §7.5 (UI-01..UI-05) and `docs/scope/Sentinel_Phase_1_Core_Investigation.md`.
 - **Visual design:** `docs/design/sentinel-ledger.html`. Open it in a browser; the "Preview state" select shows each analysis state.
-- **Design brief:** `docs/design/engineer-view-brief.md`.
 
 ## Global Constraints
 
