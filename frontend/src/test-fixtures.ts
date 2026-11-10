@@ -24,9 +24,18 @@ export function referenceIncident(over: Partial<Incident> = {}): Incident {
     resolved_by: null,
     trigger_event_id: "evt-alert",
     signal_count: 1,
+    evidence_sources: [
+      { integration_id: "int-deploys", name: "deploys", capability: "change_source", event_count: 1, status: "retrieved" },
+      { integration_id: "int-monitor", name: "monitor", capability: "incident_input", event_count: 1, status: "retrieved" },
+      { integration_id: null, name: "Logs", capability: null, event_count: 0, status: "not_connected" },
+      { integration_id: null, name: "Metrics", capability: null, event_count: 0, status: "not_connected" },
+    ],
     analysis: {
       status: "succeeded",
       last_error: null,
+      started_at: "2026-11-09T14:09:14Z",
+      finished_at: "2026-11-09T14:09:48Z",
+      revision_count: 1,
       latest_revision: {
         id: "rev-1",
         revision_number: 1,

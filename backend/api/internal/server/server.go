@@ -93,6 +93,8 @@ func New(d Deps) http.Handler {
 
 	an := analysis.Handlers{Service: analysis.Service{Pool: d.Pool}, Log: d.Logger}
 	mux.Handle("POST /v1/incidents/{incidentId}/reanalyze", member(an.Reanalyze))
+	mux.Handle("GET /v1/incidents/{incidentId}/revisions", member(an.Revisions))
+	mux.Handle("GET /v1/incidents/{incidentId}/revisions/{n}", member(an.Revision))
 
 	return httpx.RequestID(mux)
 }

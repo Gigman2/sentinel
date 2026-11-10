@@ -7,7 +7,7 @@ import { ResolveDialog } from "../components/ResolveDialog";
 import { StagePills } from "../components/StagePills";
 import { Timeline } from "../components/Timeline";
 import { shortId, utcTime } from "../format";
-import type { Incident, Page, TimelineItem } from "../types";
+import type { Incident, Page, Revision, TimelineItem } from "../types";
 
 const POLL_MS = 3000;
 
@@ -32,6 +32,8 @@ export function IncidentDetail({ id }: { id: string }) {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const noticeTimer = useRef<number>();
+  // A superseded revision being viewed instead of the latest.
+  const [old, setOld] = useState<{ n: number; supersededAt: string | null; revision: Revision | null; error: string | null } | null>(null);
 
   // The incident, polled while analysis is in progress.
   useEffect(() => {
@@ -107,6 +109,23 @@ export function IncidentDetail({ id }: { id: string }) {
     [flash],
   );
 
+  const viewRevision = useCallback(
+    (n: number, supersededAt: string | null) => {
+      if (n === incident?.analysis.latest_revision?.revision_number) {
+        setOld(null);
+        return;
+      }
+      setOld({ n, supersededAt, revision: null, error: null });
+      apiFetch<Revision>("GET", `/v1/incidents/${id}/revisions/${n}`)
+        .then((r) => setOld((cur) => (cur?.n === n ? { ...cur, revision: r } : cur)))
+        .catch((e) => {
+          if (e instanceof ApiError && e.status === 401) return;
+          setOld((cur) => (cur?.n === n ? { ...cur, error: describeError(e) } : cur));
+        });
+    },
+    [id, incident?.analysis.latest_revision?.revision_number],
+  );
+
   async function retry() {
     setRetrying(true);
     setRetryError(null);
@@ -140,7 +159,8 @@ export function IncidentDetail({ id }: { id: string }) {
 
   const label = shortId(incident.id, incident.number);
   const resolver = incident.resolved_by?.display_name;
-  const rev = incident.analysis.latest_revision;
+  const latest = incident.analysis.latest_revision;
+  const rev = old ? old.revision : latest;
   const resolved = incident.status === "resolved";
 
   return (
@@ -169,6 +189,23 @@ export function IncidentDetail({ id }: { id: string }) {
           </div>
 
           {loadError && <div className="inline-error error-text">{loadError}</div>}
+
+          {old && latest && (
+            <div className="old-revision" role="status">
+              <span>
+                Viewing <b>Revision {old.n}</b>
+                {old.supersededAt ? (
+                  <>
+                    , superseded at <span className="mono">{utcTime(old.supersededAt, { seconds: true }).text}</span>
+                  </>
+                ) : null}
+                .{old.error && <span className="error-text"> It couldn't load: {old.error}</span>}
+              </span>
+              <button type="button" className="btn" onClick={() => setOld(null)}>
+                Back to Revision {latest.revision_number}
+              </button>
+            </div>
+          )}
 
           {resolved && incident.resolution && (
             <div className="cause">
@@ -207,7 +244,8 @@ export function IncidentDetail({ id }: { id: string }) {
                 ))}
               </div>
             </div>
-            <AnalysisPanel analysis={incident.analysis} onRetry={retry} retrying={retrying} retryError={retryError} />
+            {!old && <AnalysisPanel analysis={incident.analysis} onRetry={retry} retrying={retrying} retryError={retryError} />}
+            {old && !old.revision && !old.error && <span className="muted">Loading revision {old.n}…</span>}
             {rev && (
               <>
                 <Findings findings={rev.findings} events={byId} layout={layout} onCite={cite} />
@@ -238,7 +276,7 @@ export function IncidentDetail({ id }: { id: string }) {
           </section>
         </div>
 
-        <Properties incident={incident} events={events ?? []} onCite={cite} />
+        <Properties incident={incident} events={events ?? []} onCite={cite} viewing={old ? old.n : null} onViewRevision={viewRevision} />
       </div>
 
       {resolving && (

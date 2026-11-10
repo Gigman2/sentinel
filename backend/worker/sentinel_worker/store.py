@@ -43,17 +43,20 @@ def lease_job(conn: psycopg.Connection, lease_seconds: int = 60) -> Job | None:
     In one transaction: first fail running jobs whose lease expired on their
     last attempt (their worker died every time), then take one pending job
     that is due, or a running job whose lease expired with attempts left.
+    started_at records the first lease and is kept on later ones.
     """
     with conn.transaction():
         conn.execute(
             """UPDATE analysis_jobs
-               SET status = 'failed', last_error = %s, lease_token = NULL, lease_expires_at = NULL, updated_at = now()
+               SET status = 'failed', last_error = %s, lease_token = NULL, lease_expires_at = NULL,
+                   finished_at = now(), updated_at = now()
                WHERE status = 'running' AND lease_expires_at < now() AND attempts >= max_attempts""",
             (LEASE_EXPIRED,))
         row = conn.execute(
             """UPDATE analysis_jobs
                SET status = 'running', attempts = attempts + 1, lease_token = gen_random_uuid(),
-                   lease_expires_at = now() + make_interval(secs => %s), updated_at = now()
+                   lease_expires_at = now() + make_interval(secs => %s),
+                   started_at = COALESCE(started_at, now()), updated_at = now()
                WHERE id = (
                    SELECT id FROM analysis_jobs
                    WHERE (status = 'pending' AND next_attempt_at <= now())
@@ -97,7 +100,8 @@ def write_revision(conn: psycopg.Connection, job: Job, findings: list[Finding]) 
             conn.execute("SELECT id FROM incidents WHERE id = %s FOR NO KEY UPDATE", (job.incident_id,))
             done = conn.execute(
                 """UPDATE analysis_jobs
-                   SET status = 'succeeded', lease_token = NULL, lease_expires_at = NULL, updated_at = now()
+                   SET status = 'succeeded', lease_token = NULL, lease_expires_at = NULL,
+                       finished_at = now(), updated_at = now()
                    WHERE id = %s AND status = 'running' AND lease_token = %s""",
                 (job.id, job.lease_token))
             if done.rowcount != 1:
@@ -157,7 +161,8 @@ def fail_job(conn: psycopg.Connection, job: Job, error: BaseException) -> None:
 def _mark_failed(conn: psycopg.Connection, job: Job, message: str) -> None:
     conn.execute(
         """UPDATE analysis_jobs
-           SET status = 'failed', last_error = %s, lease_token = NULL, lease_expires_at = NULL, updated_at = now()
+           SET status = 'failed', last_error = %s, lease_token = NULL, lease_expires_at = NULL,
+               finished_at = now(), updated_at = now()
            WHERE id = %s AND status = 'running' AND lease_token = %s""",
         (message, job.id, job.lease_token))
 

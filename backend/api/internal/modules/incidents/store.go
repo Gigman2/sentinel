@@ -348,3 +348,31 @@ func timelineEvents(ctx context.Context, q database.DBTX, incidentID string, aft
 		return r, err
 	})
 }
+
+type integrationCount struct {
+	ID         string
+	Name       string
+	Capability string
+	EventCount int
+}
+
+// integrationEventCounts returns each integration of the project (by name)
+// with how many of its events are linked to the incident.
+func integrationEventCounts(ctx context.Context, q database.DBTX, projectID, incidentID string) ([]integrationCount, error) {
+	rows, err := q.Query(ctx, `
+		SELECT g.id::text, g.name, g.capability,
+		       (SELECT count(*)::int FROM incident_events l
+		        JOIN operational_events e ON e.id = l.event_id
+		        WHERE l.incident_id = $2 AND e.integration_id = g.id)
+		FROM integrations g
+		WHERE g.project_id = $1
+		ORDER BY g.name, g.id`, projectID, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (integrationCount, error) {
+		var c integrationCount
+		err := row.Scan(&c.ID, &c.Name, &c.Capability, &c.EventCount)
+		return c, err
+	})
+}

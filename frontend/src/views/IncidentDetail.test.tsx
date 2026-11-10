@@ -10,7 +10,7 @@ const detailPath = `/v1/incidents/${INCIDENT_ID}`;
 
 function pending(): Incident {
   const inc = referenceIncident();
-  return { ...inc, analysis: { status: "pending", last_error: null, latest_revision: null } };
+  return { ...inc, analysis: { status: "pending", last_error: null, started_at: null, finished_at: null, revision_count: 0, latest_revision: null } };
 }
 
 beforeEach(() => {
@@ -179,4 +179,157 @@ describe("incident detail", () => {
     expect(scroll).toHaveBeenCalled();
     expect(document.getElementById("evt-evt-deploy")).toHaveAttribute("data-highlight", "true");
   });
+
+  describe("revision history", () => {
+    // Revision 1 analysed the alert alone; the deployment arrived late and
+    // revision 2 (the reference findings) replaced it.
+    const rev1 = {
+      id: "rev-1",
+      revision_number: 1,
+      created_at: "2026-11-09T14:09:48Z",
+      findings: [
+        { kind: "observation", rule_id: "trigger_alert", text: "payment-service alert first fired at 14:09 UTC.", limitations: null, evidence_ids: ["evt-alert"] },
+        { kind: "unknown", rule_id: "no_deployment_evidence", text: "No deployment information is available for payment-service in the investigated window.", limitations: null, evidence_ids: [] },
+      ],
+    };
+    const history = {
+      items: [
+        {
+          revision_number: 2,
+          created_at: "2026-11-09T14:11:20Z",
+          reason: "late_event",
+          finding_count: 5,
+          changes: {
+            added: [
+              { kind: "observation", rule_id: "deployment_in_window" },
+              { kind: "hypothesis", rule_id: "deployment_near_onset" },
+              { kind: "next_check", rule_id: "compare_by_version" },
+              { kind: "next_check", rule_id: "review_change" },
+            ],
+            removed: [{ kind: "unknown", rule_id: "no_deployment_evidence" }],
+          },
+          new_evidence: [{ event_id: "evt-deploy", type: "deployment.completed", received_at: "2026-11-09T14:11:03Z" }],
+        },
+        { revision_number: 1, created_at: "2026-11-09T14:09:48Z", reason: "incident_created", finding_count: 2, changes: null, new_evidence: [{ event_id: "evt-alert", type: "alert.triggered", received_at: "2026-11-09T14:09:12Z" }] },
+      ],
+    };
+    function twoRevisions(): Incident {
+      const inc = referenceIncident();
+      return {
+        ...inc,
+        analysis: {
+          ...inc.analysis,
+          started_at: "2026-11-09T14:11:05Z",
+          finished_at: "2026-11-09T14:11:20Z",
+          revision_count: 2,
+          latest_revision: { ...inc.analysis.latest_revision!, id: "rev-2", revision_number: 2, created_at: "2026-11-09T14:11:20Z" },
+        },
+      };
+    }
+
+    it("lists revisions with their reason and changes, and views an old one", async () => {
+      const fetch = mockFetch({
+        "GET /v1/projects": () => projects,
+        [`GET ${detailPath}`]: () => twoRevisions(),
+        [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+        [`GET ${detailPath}/revisions`]: () => history,
+        [`GET ${detailPath}/revisions/1`]: () => rev1,
+      });
+      render(<App />);
+      const analysis = await screen.findByRole("region", { name: "Analysis" });
+      expect(within(analysis).getByText("Started").nextSibling).toHaveTextContent("14:11:05 UTC");
+      expect(within(analysis).getByText("Completed").nextSibling).toHaveTextContent("14:11:20 UTC");
+      expect(within(analysis).getByText("Elapsed").nextSibling).toHaveTextContent("0:15");
+
+      await userEvent.click(within(analysis).getByRole("button", { name: "History" }));
+      const list = await within(analysis).findByRole("list", { name: "Revision history" });
+      const items = within(list).getAllByRole("listitem");
+      expect(items).toHaveLength(2);
+      expect(items[0]).toHaveTextContent("Revision 2");
+      expect(items[0]).toHaveTextContent("Late evidence: deployment received at 14:11:03 UTC.");
+      expect(items[0]).toHaveTextContent("+ Observed, + Hypothesis, + Check ×2, − Gap");
+      expect(items[1]).toHaveTextContent("Initial analysis when the incident opened.");
+      expect(items[1]).toHaveTextContent("Initial analysis · 2 findings");
+      expect(within(items[0]).getByRole("button", { name: "Viewing revision 2" })).toHaveAttribute("aria-pressed", "true");
+
+      await userEvent.click(within(items[1]).getByRole("button", { name: "View revision 1" }));
+      const banner = await screen.findByRole("status", { name: "" });
+      await waitFor(() => expect(screen.getByText(/No deployment information is available/)).toBeInTheDocument());
+      expect(banner).toHaveTextContent("Viewing Revision 1, superseded at 14:11:20 UTC.");
+      expect(screen.queryByText(/may be related to the alert/)).toBeNull();
+      expect(screen.getByText(/Analysis revision 1 from/)).toBeInTheDocument();
+      expect(within(items[1]).getByRole("button", { name: "Viewing revision 1" })).toBeInTheDocument();
+      expect(fetch.mock.calls.some(([u]) => String(u).endsWith("/revisions/1"))).toBe(true);
+
+      await userEvent.click(screen.getByRole("button", { name: "Back to Revision 2" }));
+      expect(screen.queryByText(/Viewing Revision 1/)).toBeNull();
+      expect(screen.getAllByText(/may be related to the alert/).length).toBeGreaterThan(0);
+    });
+
+    it("hides History until there is a revision", async () => {
+      mockFetch({
+        "GET /v1/projects": () => projects,
+        [`GET ${detailPath}`]: () => pending(),
+        [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+      });
+      render(<App />);
+      const analysis = await screen.findByRole("region", { name: "Analysis" });
+      expect(within(analysis).queryByRole("button", { name: "History" })).toBeNull();
+      expect(within(analysis).queryByText("Started")).toBeNull();
+    });
+
+    it("counts elapsed time live while the job runs", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date("2026-11-09T14:09:55Z"));
+      const running = pending();
+      running.analysis = { ...running.analysis, status: "running", started_at: "2026-11-09T14:09:14Z" };
+      mockFetch({
+        "GET /v1/projects": () => projects,
+        [`GET ${detailPath}`]: () => running,
+        [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+      });
+      render(<App />);
+      const analysis = await screen.findByRole("region", { name: "Analysis" });
+      await waitFor(() => expect(within(analysis).getByText("Elapsed").nextSibling).toHaveTextContent(/^0:4\d$/));
+      const before = within(analysis).getByText("Elapsed").nextSibling!.textContent!;
+      await act(() => vi.advanceTimersByTimeAsync(2000));
+      expect(within(analysis).getByText("Elapsed").nextSibling!.textContent).not.toBe(before);
+      expect(within(analysis).queryByText("Completed")).toBeNull();
+    });
+
+    it("shows a failed job's time as Failed", async () => {
+      const inc = referenceIncident();
+      inc.analysis = { ...inc.analysis, status: "failed", last_error: "RuntimeError: boom", started_at: "2026-11-09T14:09:14Z", finished_at: "2026-11-09T14:10:15Z" };
+      mockFetch({
+        "GET /v1/projects": () => projects,
+        [`GET ${detailPath}`]: () => inc,
+        [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+      });
+      render(<App />);
+      const analysis = await screen.findByRole("region", { name: "Analysis" });
+      expect(within(analysis).getByText("Failed", { selector: ".prop > span:first-child" }).nextSibling).toHaveTextContent("14:10:15 UTC");
+      expect(within(analysis).getByText("Elapsed").nextSibling).toHaveTextContent("1:01");
+    });
+  });
+
+  it("shows which evidence sources returned data", async () => {
+    const inc = referenceIncident();
+    inc.evidence_sources = inc.evidence_sources.map((s) => (s.name === "deploys" ? { ...s, event_count: 0, status: "no_matching_data" } : s));
+    mockFetch({
+      "GET /v1/projects": () => projects,
+      [`GET ${detailPath}`]: () => inc,
+      [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+    });
+    render(<App />);
+    const sources = await screen.findByRole("region", { name: "Evidence sources" });
+    expect(within(sources).getByText("1 of 4 returned data")).toBeInTheDocument();
+    const rows = within(sources).getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      "deploys0 eventsNo matching data found",
+      "monitor1 eventRetrieved",
+      "Logs—Not connected",
+      "Metrics—Not connected",
+    ]);
+  });
 });
+

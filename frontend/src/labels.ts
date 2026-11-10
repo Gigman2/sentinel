@@ -1,5 +1,5 @@
 // Human labels for API values.
-import type { AnalysisStatus, Disposition, EventType, FindingKind, LinkReason } from "./types";
+import type { AnalysisStatus, Disposition, EventType, EvidenceSourceStatus, FindingKind, LinkReason } from "./types";
 
 export const EVENT_LABEL: Record<EventType, string> = {
   "alert.triggered": "Alert",
@@ -51,4 +51,25 @@ export const DISPOSITION_LABEL: Record<Disposition, string> = {
   incident_resolved: "Resolved",
   unmatched_resolution: "No open incident",
   evidence: "Evidence",
+};
+
+/** An event type as a noun inside a sentence ("Late evidence: deployment received at …"). */
+export const EVENT_NOUN: Record<EventType, string> = {
+  "alert.triggered": "alert",
+  "alert.resolved": "alert resolution",
+  "error.observed": "error event",
+  "deployment.completed": "deployment",
+};
+
+export const SOURCE_STATUS_LABEL: Record<EvidenceSourceStatus, string> = {
+  retrieved: "Retrieved",
+  no_matching_data: "No matching data found",
+  not_connected: "Not connected",
+};
+
+/** Colour token for an evidence source's status dot and coverage segment. */
+export const SOURCE_STATUS_TONE: Record<EvidenceSourceStatus, string> = {
+  retrieved: "var(--ok)",
+  no_matching_data: "var(--major)",
+  not_connected: "var(--fg3)",
 };

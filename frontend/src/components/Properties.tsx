@@ -1,9 +1,23 @@
-import type { ReactNode } from "react";
-import { utcTime } from "../format";
+import { useEffect, useState, type ReactNode } from "react";
+import { elapsed, utcTime } from "../format";
 import { ANALYSIS_LABEL, ANALYSIS_TONE, EVENT_LABEL } from "../labels";
 import type { Incident, TimelineItem } from "../types";
 import { Dot } from "./Dot";
+import { EvidenceSources } from "./EvidenceSources";
+import { RevisionHistory } from "./RevisionHistory";
 import { SeverityChip } from "./SeverityChip";
+
+/** The current time, re-read every second while `live`. */
+function useNow(live: boolean): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    if (!live) return;
+    setNow(new Date());
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, [live]);
+  return now;
+}
 
 function Prop({ k, children }: { k: string; children: ReactNode }) {
   return (
@@ -23,11 +37,30 @@ function Time({ iso, seconds = true, zone = true }: { iso: string | null; second
   );
 }
 
-/** The detail page's side column: properties, analysis and grouped signals. */
-export function Properties({ incident, events, onCite }: { incident: Incident; events: TimelineItem[]; onCite: (id: string) => void }) {
+/** The detail page's side column: properties, analysis, evidence sources
+ * and grouped signals. */
+export function Properties({
+  incident,
+  events,
+  onCite,
+  viewing,
+  onViewRevision,
+}: {
+  incident: Incident;
+  events: TimelineItem[];
+  onCite: (id: string) => void;
+  /** The revision whose findings are on screen. */
+  viewing: number | null;
+  onViewRevision: (n: number, supersededAt: string | null) => void;
+}) {
   const trigger = events.find((e) => e.event_id === incident.trigger_event_id);
   const signals = events.filter((e) => e.link_reason === "trigger" || e.link_reason === "repeat_trigger");
   const a = incident.analysis;
+  const [showHistory, setShowHistory] = useState(false);
+  const running = (a.status === "pending" || a.status === "running") && !!a.started_at && !a.finished_at;
+  const now = useNow(running);
+  // Jobs from before finish times were recorded: the revision time stands in.
+  const finished = a.finished_at ?? (a.status === "succeeded" ? (a.latest_revision?.created_at ?? null) : null);
   const resolved = incident.status === "resolved";
   const win = incident.evidence_window;
   return (
@@ -87,14 +120,43 @@ export function Properties({ incident, events, onCite }: { incident: Incident; e
           </span>
         </Prop>
         <Prop k="Revision">
-          <span className="mono">{a.latest_revision ? a.latest_revision.revision_number : "—"}</span>
+          <span className="inline-dot">
+            <span className="mono">{a.latest_revision ? a.latest_revision.revision_number : "—"}</span>
+            {a.revision_count > 0 && (
+              <button type="button" className="ghost" aria-expanded={showHistory} onClick={() => setShowHistory((v) => !v)}>
+                {showHistory ? "Hide history" : "History"}
+              </button>
+            )}
+          </span>
         </Prop>
-        {a.latest_revision && (
-          <Prop k="Completed">
-            <Time iso={a.latest_revision.created_at} />
+        {showHistory && a.revision_count > 0 && (
+          <RevisionHistory
+            incidentId={incident.id}
+            refresh={a.revision_count}
+            viewing={viewing ?? a.latest_revision?.revision_number ?? 0}
+            onView={onViewRevision}
+          />
+        )}
+        {a.started_at && (
+          <Prop k="Started">
+            <Time iso={a.started_at} />
+          </Prop>
+        )}
+        {finished && a.status !== "pending" && a.status !== "running" && (
+          <Prop k={a.status === "failed" ? "Failed" : "Completed"}>
+            <Time iso={finished} />
+          </Prop>
+        )}
+        {a.started_at && (running || a.finished_at) && (
+          <Prop k="Elapsed">
+            <span className="mono" aria-live="off">
+              {elapsed(a.started_at, running ? now : new Date(a.finished_at!))}
+            </span>
           </Prop>
         )}
       </section>
+
+      <EvidenceSources sources={incident.evidence_sources} />
 
       <section aria-label="Grouped signals" className="side-section">
         <h2 className="side-title">
