@@ -120,9 +120,11 @@ def write_revision(conn: psycopg.Connection, job: Job, findings: list[Finding], 
                 return conn.execute("SELECT id::text FROM analysis_revisions WHERE job_id = %s",
                                     (job.id,)).fetchone()[0]
             revision_id = row[0]
-            for event_id in dict.fromkeys(seen):
-                conn.execute("INSERT INTO revision_events (revision_id, event_id) VALUES (%s, %s)",
-                             (revision_id, event_id))
+            # One statement for all of them: this runs under the incident lock.
+            conn.execute(
+                """INSERT INTO revision_events (revision_id, event_id)
+                   SELECT %s, e FROM unnest(%s::uuid[]) AS e""",
+                (revision_id, list(dict.fromkeys(seen))))
             for ordinal, f in enumerate(findings):
                 finding_id = conn.execute(
                     """INSERT INTO findings (revision_id, ordinal, kind, rule_id, text, limitations)

@@ -323,8 +323,34 @@ func TestRevisionHistoryOverlappingJobs(t *testing.T) {
 	}
 }
 
+// A third revision after overlapping jobs: the deployment was already read
+// by revision 1, so it is not new again even though revision 2 missed it.
+func TestRevisionHistoryNotNewTwice(t *testing.T) {
+	f, clock := newClockFixture(t)
+	incidentID, alertID := f.openIncident()
+	older, _ := f.pendingJob(incidentID)
+	f.exec(`UPDATE analysis_jobs SET status = 'running' WHERE id = $1`, older)
+	*clock = now.Add(5 * time.Minute)
+	deployID, _ := f.ingest(f.s.DeployIntegrationID, f.s.DeployToken, deployment("deploy-late", now.Add(-7*time.Minute)))
+	newer, _ := f.pendingJob(incidentID)
+	f.completeJob(newer, incidentID, 1, now.Add(6*time.Minute), []string{alertID, deployID}, rule("observation", "deployment_in_window"))
+	f.completeJob(older, incidentID, 2, now.Add(time.Second), []string{alertID}, rule("observation", "trigger_alert"))
+	third, err := f.enqueue(incidentID, analysis.ReasonManualRetry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.completeJob(third, incidentID, 3, now.Add(8*time.Minute), []string{alertID, deployID}, rule("observation", "deployment_in_window"))
+
+	h := f.history(incidentID)
+	if h[0].RevisionNumber != 3 || h[0].NewEvidence == nil || len(h[0].NewEvidence) != 0 {
+		t.Fatalf("revision 3 new evidence %+v, want []", h[0].NewEvidence)
+	}
+}
+
 // Revisions from before revision_events existed report new evidence as
-// unknown (null), and so does the first revision after them.
+// unknown (null), and so does the first revision after them. A recorded
+// revision after that compares against every recorded earlier one, even if
+// an unrecorded one sits in between.
 func TestRevisionHistoryLegacyRevisions(t *testing.T) {
 	f := newFixture(t)
 	incidentID, alertID := f.openIncident()
@@ -350,5 +376,22 @@ func TestRevisionHistoryLegacyRevisions(t *testing.T) {
 	}
 	if ev, ok := raw[0]["new_evidence"].([]any); !ok || len(ev) != 0 {
 		t.Fatalf("revision 3 new_evidence %v, want []", raw[0]["new_evidence"])
+	}
+
+	// An unrecorded revision 4 (an old worker), then recorded revision 5:
+	// 5 still compares against 2 and 3.
+	job4, err := f.enqueue(incidentID, analysis.ReasonManualRetry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.completeJob(job4, incidentID, 4, now.Add(3*time.Minute), nil, rule("observation", "trigger_alert"))
+	job5, err := f.enqueue(incidentID, analysis.ReasonManualRetry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.completeJob(job5, incidentID, 5, now.Add(4*time.Minute), []string{alertID}, rule("observation", "trigger_alert"))
+	h := f.history(incidentID)
+	if h[1].NewEvidence != nil || h[0].NewEvidence == nil || len(h[0].NewEvidence) != 0 {
+		t.Fatalf("revision 4 %+v, revision 5 %+v", h[1].NewEvidence, h[0].NewEvidence)
 	}
 }

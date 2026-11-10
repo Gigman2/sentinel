@@ -223,19 +223,23 @@ PR `feat/p1-12-list-read-model`.
 PR `feat/p1-13-revisions`.
 
 **Files:**
-- Create: `backend/api/migrations/0006_analysis_timings.sql`, `analysis/history.go`, `incidents/coverage.go`.
+- Create: `backend/api/migrations/0006_analysis_timings.sql`, `backend/api/migrations/0007_revision_events.sql` (added after review, PR #21), `analysis/history.go`, `incidents/coverage.go`.
 - Modify: `analysis/{jobs.go,store.go,handlers.go}`, `backend/worker/sentinel_worker/store.py` (`lease_job` sets `started_at` on the first lease; `write_revision` / `_mark_failed` set `finished_at`), frontend `Properties.tsx`, `IncidentDetail.tsx`, `src/components/RevisionHistory.tsx` (new), `src/components/EvidenceSources.tsx` (new).
 - Test: `analysis/history_test.go`, `incidents/coverage_test.go`, `backend/worker/tests/test_store.py`, `IncidentDetail.test.tsx`.
 
 **Interfaces:**
-- **Migration:** `analysis_jobs.started_at timestamptz NULL`, `analysis_jobs.finished_at timestamptz NULL`.
+- **Migrations:**
+  - `0006`: `analysis_jobs.started_at timestamptz NULL`, `analysis_jobs.finished_at timestamptz NULL`.
+  - `0007`: `revision_events (revision_id, event_id)`, the events each revision's analysis read. The worker writes them in the same transaction as the revision.
 - **`analysis.View` adds:** `started_at`, `finished_at` (from the job shown), `revision_count int`.
 - **`GET /v1/incidents/{id}/revisions`** returns `{items: [...]}` newest first (no paging; revisions per incident are few). Each item has:
   - `revision_number`, `created_at`.
   - `reason` (`incident_created|repeat_trigger|late_event|manual_retry`, from the job).
   - `finding_count`.
   - `changes {added: [{kind, rule_id}], removed: [{kind, rule_id}]}`, a multiset diff of `(kind, rule_id)` against the previous revision. For revision 1, `changes` is `null`.
-  - `new_evidence: [{event_id, type, received_at}]`: events whose `incident_events.linked_at` is after the previous revision's `created_at` and at or before this revision's job `started_at` (for revision 1: all links up to `started_at`).
+  - `new_evidence: [{event_id, type, received_at}] | null`: the events this revision read (from `revision_events`) that no earlier revision read; for revision 1, everything it read. Ordered by `received_at`.
+    - `null` means unknown: the revision was written before `revision_events` existed, or only such revisions came before it.
+    - *Changed after review (PR #21):* the first version compared `linked_at` with job `started_at` windows. Retries, overlapping jobs and clock skew between the API and the database all misplaced evidence that way.
 - **`GET /v1/incidents/{id}/revisions/{n}`** returns the full revision (`id, revision_number, created_at, findings`), or 404 `not_found`.
 - **Detail adds `evidence_sources`:**
   - One entry per project integration: `{integration_id, name, capability, event_count, status}`.
@@ -248,8 +252,9 @@ PR `feat/p1-13-revisions`.
   - The Evidence sources panel has the coverage bar and the "{k} of {n} returned data" label.
 
 - [ ] **Step 1: Write failing tests.**
-  - `TestRevisionHistoryFirstRevision`: `changes` is null and `new_evidence` lists the trigger and the in-window events.
+  - `TestRevisionHistoryFirstRevision`: `changes` is null and `new_evidence` lists every event revision 1 read.
   - `TestRevisionHistoryLateDeployment`: revision 2 has reason `late_event`, adds `deployment_in_window`, `deployment_near_onset`, `compare_by_version` and `review_change`, and removes `no_deployment_evidence` and `check_change_history`, with `new_evidence` = [the deployment].
+  - After review: `TestRevisionHistoryRetrySeesLateEvent`, `TestRevisionHistoryOverlappingJobs`, `TestRevisionHistoryNotNewTwice`, `TestRevisionHistoryLegacyRevisions`.
   - `TestRevisionByNumber404`, including another organisation.
   - `TestCoverage`.
   - Worker: `test_started_and_finished_at`, where `started_at` is not overwritten on a re-lease.
