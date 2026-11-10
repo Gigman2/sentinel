@@ -534,5 +534,44 @@ describe("incident detail", () => {
       await act(async () => release());
     });
   });
+
+  describe("registered dependencies", () => {
+    function show(inc: Incident) {
+      mockFetch({
+        "GET /v1/projects": () => projects,
+        [`GET ${detailPath}`]: () => inc,
+        [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+      });
+      render(<App />);
+    }
+
+    it("lists two hops under their caller, with the note", async () => {
+      const inc = referenceIncident();
+      inc.dependencies = [
+        { component: { id: "c-ledger", slug: "ledger", display_name: "Ledger", kind: "internal" }, depth: 1, via_component_id: null },
+        { component: { id: "c-prov", slug: "payment-provider", display_name: "Payment provider", kind: "external" }, depth: 1, via_component_id: null },
+        { component: { id: "c-bank", slug: "bank-api", display_name: "Bank API", kind: "external" }, depth: 2, via_component_id: "c-ledger" },
+      ];
+      show(inc);
+      const panel = await screen.findByRole("region", { name: "Registered dependencies" });
+      const rows = within(panel).getAllByRole("listitem");
+      expect(rows.map((r) => r.textContent)).toEqual([
+        "payment-serviceprimary",
+        "↳ledgercalls",
+        "↳Bank APIexternal", // under its caller, before the next direct dependency
+        "↳Payment providerexternal",
+      ]);
+      expect(rows[2]).toHaveClass("dep-2");
+      expect(within(rows[1]).getByText("ledger")).toHaveClass("mono");
+      expect(within(panel).getByText("No evidence is gathered from dependencies yet.")).toBeInTheDocument();
+      expect(screen.queryByText(/Affected components/)).toBeNull();
+    });
+
+    it("says when none are registered", async () => {
+      show(referenceIncident({ dependencies: [] }));
+      const panel = await screen.findByRole("region", { name: "Registered dependencies" });
+      expect(within(panel).getByText("No dependencies are registered for payment-service.")).toBeInTheDocument();
+    });
+  });
 });
 

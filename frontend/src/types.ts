@@ -178,6 +178,15 @@ export interface Incident {
   signal_count: number;
   analysis: Analysis;
   evidence_sources: EvidenceSource[];
+  /** Registered components this incident's component calls, two hops at most. */
+  dependencies: DownstreamComponent[];
+}
+
+export interface DownstreamComponent {
+  component: { id: string; slug: string; display_name: string; kind: "internal" | "external" };
+  depth: 1 | 2;
+  /** For depth 2, the depth-1 component that calls it. */
+  via_component_id: string | null;
 }
 
 export interface TimelineItem {

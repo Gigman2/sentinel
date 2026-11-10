@@ -55,6 +55,35 @@ func (h Handlers) ListComponents(w http.ResponseWriter, r *http.Request) {
 	h.respond(w, r, http.StatusOK, map[string]any{"items": items}, err)
 }
 
+// ListDependencies handles GET /v1/projects/{projectId}/dependencies.
+func (h Handlers) ListDependencies(w http.ResponseWriter, r *http.Request) {
+	items, err := h.Service.ListDependencies(r.Context(), org(r), r.PathValue("projectId"))
+	h.respond(w, r, http.StatusOK, map[string]any{"items": items}, err)
+}
+
+// AddDependency handles POST /v1/projects/{projectId}/dependencies {from, to}.
+func (h Handlers) AddDependency(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := httpx.DecodeJSON(w, r, &body, MaxBodyBytes); err != nil {
+		httpx.WriteErr(w, r, err)
+		return
+	}
+	d, err := h.Service.AddDependency(r.Context(), org(r), r.PathValue("projectId"), body.From, body.To)
+	h.respond(w, r, http.StatusCreated, d, err)
+}
+
+// RemoveDependency handles DELETE /v1/projects/{projectId}/dependencies/{fromId}/{toId}.
+func (h Handlers) RemoveDependency(w http.ResponseWriter, r *http.Request) {
+	if err := h.Service.RemoveDependency(r.Context(), org(r), r.PathValue("projectId"), r.PathValue("fromId"), r.PathValue("toId")); err != nil {
+		h.respond(w, r, 0, nil, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func org(r *http.Request) string { return auth.PrincipalFrom(r.Context()).OrganizationID }
 
 func (h Handlers) respond(w http.ResponseWriter, r *http.Request, status int, v any, err error) {
@@ -64,6 +93,8 @@ func (h Handlers) respond(w http.ResponseWriter, r *http.Request, status int, v 
 		httpx.WriteJSON(w, status, v)
 	case errors.Is(err, ErrNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, "not_found", "no matching project found")
+	case errors.Is(err, ErrDependencyNotFound):
+		httpx.WriteError(w, r, http.StatusNotFound, "not_found", "no matching dependency found")
 	case errors.As(err, &clientErr):
 		httpx.WriteErr(w, r, clientErr)
 	default:

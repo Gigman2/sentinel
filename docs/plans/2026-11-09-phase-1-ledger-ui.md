@@ -356,7 +356,7 @@ PR `feat/p1-15-feedback`.
 PR `feat/p1-16-dependencies`.
 
 **Files:**
-- Create: `backend/api/migrations/0009_component_dependencies.sql`, `tenancy/dependencies.go`, `tenancy/dependencies_test.go`, frontend `src/components/Dependencies.tsx`.
+- Create: `backend/api/migrations/0010_component_dependencies.sql`, `tenancy/dependencies.go`, `tenancy/dependencies_test.go`, frontend `src/components/Dependencies.tsx`.
 - Modify: `tenancy/{store.go,handlers.go}`, `incidents/service.go` (detail field), `support/seed/seed.go` (adds the `payment-provider` component and the edges `checkout-api → payment-service` and `payment-service → payment-provider`).
 - Test: `dependencies_test.go`, `seed_test.go`, `IncidentDetail.test.tsx`.
 

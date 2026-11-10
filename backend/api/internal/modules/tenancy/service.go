@@ -38,16 +38,25 @@ type Component struct {
 	Environment string    `json:"environment"`
 	Slug        string    `json:"slug"`
 	DisplayName string    `json:"display_name"`
+	Kind        string    `json:"kind"`
 	Description *string   `json:"description"`
 	Owner       *string   `json:"owner"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// Component kinds.
+const (
+	KindInternal = "internal"
+	KindExternal = "external"
+)
+
 // ComponentInput is the body of a component create request.
 type ComponentInput struct {
-	Slug        string  `json:"slug"`
-	DisplayName string  `json:"display_name"`
-	Environment string  `json:"environment"`
+	Slug        string `json:"slug"`
+	DisplayName string `json:"display_name"`
+	Environment string `json:"environment"`
+	// Kind is "internal" (the default) or "external".
+	Kind        string  `json:"kind"`
 	Description *string `json:"description"`
 	Owner       *string `json:"owner"`
 }
@@ -111,6 +120,11 @@ func (s Service) CreateComponent(ctx context.Context, orgID, projectID string, i
 		return Component{}, badRequest("missing_field", "missing required field environment")
 	case !EnvironmentPattern.MatchString(in.Environment):
 		return Component{}, badRequest("invalid_field", "field environment must be 1–32 characters of lowercase letters, digits, '-' and '_'")
+	case in.Kind != "" && in.Kind != KindInternal && in.Kind != KindExternal:
+		return Component{}, badRequest("invalid_field", `field kind must be "internal" or "external"`)
+	}
+	if in.Kind == "" {
+		in.Kind = KindInternal
 	}
 	c, err := insertComponent(ctx, s.DB, orgID, projectID, in)
 	if _, dup := database.UniqueViolation(err); dup {

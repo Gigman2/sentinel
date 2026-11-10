@@ -79,3 +79,9 @@ func UniqueViolation(err error) (constraint string, ok bool) {
 	}
 	return "", false
 }
+
+// ForeignKeyViolation reports whether err is a foreign-key violation.
+func ForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}

@@ -70,6 +70,9 @@ func New(d Deps) http.Handler {
 	mux.Handle("GET /v1/projects", member(ten.ListProjects))
 	mux.Handle("POST /v1/projects/{projectId}/components", member(ten.CreateComponent))
 	mux.Handle("GET /v1/projects/{projectId}/components", member(ten.ListComponents))
+	mux.Handle("GET /v1/projects/{projectId}/dependencies", member(ten.ListDependencies))
+	mux.Handle("POST /v1/projects/{projectId}/dependencies", member(ten.AddDependency))
+	mux.Handle("DELETE /v1/projects/{projectId}/dependencies/{fromId}/{toId}", member(ten.RemoveDependency))
 
 	integ := integrations.Handlers{Service: integrations.Service{Pool: d.Pool}, Log: d.Logger}
 	mux.Handle("POST /v1/projects/{projectId}/integrations", admin(integ.Create))

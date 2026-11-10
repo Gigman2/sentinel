@@ -24,6 +24,10 @@ func TestSeed_IdempotentAndScoped(t *testing.T) {
 		!strings.HasPrefix(first.DeployToken, "sk_int_") {
 		t.Fatalf("first run should generate tokens: %+v", first)
 	}
+	var kind string
+	if err := pool.QueryRow(ctx, `SELECT kind FROM components WHERE id = $1`, first.Components["payment-provider"]).Scan(&kind); err != nil || kind != "external" {
+		t.Fatalf("payment-provider kind %q: %v", kind, err)
+	}
 	if first.Components["checkout-api"] == "" || first.Components["payment-service"] == "" {
 		t.Fatalf("components missing: %v", first.Components)
 	}
@@ -42,8 +46,9 @@ func TestSeed_IdempotentAndScoped(t *testing.T) {
 	}
 
 	for table, want := range map[string]int{
-		"organizations": 1, "projects": 1, "components": 2, "integrations": 2,
+		"organizations": 1, "projects": 1, "components": 3, "integrations": 2,
 		"integration_component_mappings": 3, "api_tokens": 1, "memberships": 1,
+		"component_dependencies": 2,
 	} {
 		var n int
 		if err := pool.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil {
