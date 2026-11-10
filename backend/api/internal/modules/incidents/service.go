@@ -86,6 +86,9 @@ type Incident struct {
 	Analysis       analysis.View `json:"analysis"`
 	// EvidenceSources is the project's integrations, then Logs and Metrics.
 	EvidenceSources []EvidenceSource `json:"evidence_sources"`
+	// Dependencies are the registered components this incident's component
+	// calls, two hops at most. No evidence is gathered from them.
+	Dependencies []tenancy.Downstream `json:"dependencies"`
 }
 
 // Resolution sources.
@@ -140,6 +143,10 @@ func (s Service) Get(ctx context.Context, orgID, viewerID, incidentID string) (I
 	if err != nil {
 		return Incident{}, err
 	}
+	deps, err := tenancy.DownstreamOf(ctx, tx, r.ComponentID)
+	if err != nil {
+		return Incident{}, fmt.Errorf("read dependencies: %w", err)
+	}
 
 	start, end := EvidenceWindow(r.FirstSeenAt, r.LastSeenAt)
 	inc := Incident{
@@ -159,6 +166,7 @@ func (s Service) Get(ctx context.Context, orgID, viewerID, incidentID string) (I
 		SignalCount:     r.SignalCount,
 		Analysis:        view,
 		EvidenceSources: sources,
+		Dependencies:    deps,
 	}
 	if r.ResolvedByID != nil && r.ResolvedByName != nil {
 		inc.ResolvedBy = &User{ID: *r.ResolvedByID, DisplayName: *r.ResolvedByName}

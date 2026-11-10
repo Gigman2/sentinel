@@ -24,6 +24,9 @@ export function referenceIncident(over: Partial<Incident> = {}): Incident {
     resolved_by: null,
     trigger_event_id: "evt-alert",
     signal_count: 1,
+    dependencies: [
+      { component: { id: "c-prov", slug: "payment-provider", display_name: "Payment provider", kind: "external" }, depth: 1, via_component_id: null },
+    ],
     evidence_sources: [
       { integration_id: "int-deploys", name: "deploys", capability: "change_source", event_count: 1, status: "retrieved" },
       { integration_id: "int-monitor", name: "monitor", capability: "incident_input", event_count: 1, status: "retrieved" },

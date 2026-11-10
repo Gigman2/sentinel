@@ -3,6 +3,7 @@ import { elapsed, utcTime } from "../format";
 import { ANALYSIS_LABEL, ANALYSIS_TONE, EVENT_LABEL } from "../labels";
 import type { Incident, TimelineItem } from "../types";
 import { Dot } from "./Dot";
+import { Dependencies } from "./Dependencies";
 import { EvidenceSources } from "./EvidenceSources";
 import { RevisionHistory } from "./RevisionHistory";
 import { SeverityChip } from "./SeverityChip";
@@ -184,6 +185,8 @@ export function Properties({
           </div>
         ))}
       </section>
+
+      <Dependencies incident={incident} />
     </aside>
   );
 }

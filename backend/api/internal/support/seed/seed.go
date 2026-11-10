@@ -74,16 +74,29 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, cfg Config) (Result, error) {
 		return Result{}, fmt.Errorf("seed project: %w", err)
 	}
 
-	for slug, name := range map[string]string{"checkout-api": "Checkout API", "payment-service": "Payment Service"} {
+	for _, c := range []struct{ slug, name, kind string }{
+		{"checkout-api", "Checkout API", "internal"},
+		{"payment-service", "Payment Service", "internal"},
+		{"payment-provider", "Payment provider", "external"},
+	} {
 		var id string
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO components (organization_id, project_id, environment, slug, display_name)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (project_id, environment, slug) DO UPDATE SET display_name = EXCLUDED.display_name
-			RETURNING id::text`, res.OrgID, res.ProjectID, environment, slug, name).Scan(&id); err != nil {
-			return Result{}, fmt.Errorf("seed component %s: %w", slug, err)
+			INSERT INTO components (organization_id, project_id, environment, slug, display_name, kind)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (project_id, environment, slug) DO UPDATE SET display_name = EXCLUDED.display_name, kind = EXCLUDED.kind
+			RETURNING id::text`, res.OrgID, res.ProjectID, environment, c.slug, c.name, c.kind).Scan(&id); err != nil {
+			return Result{}, fmt.Errorf("seed component %s: %w", c.slug, err)
 		}
-		res.Components[slug] = id
+		res.Components[c.slug] = id
+	}
+	// checkout-api calls payment-service, which calls the payment provider.
+	for _, e := range [][2]string{{"checkout-api", "payment-service"}, {"payment-service", "payment-provider"}} {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO component_dependencies (project_id, environment, from_component_id, to_component_id)
+			VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+			res.ProjectID, environment, res.Components[e[0]], res.Components[e[1]]); err != nil {
+			return Result{}, fmt.Errorf("seed dependency %s → %s: %w", e[0], e[1], err)
+		}
 	}
 
 	if res.MonitorIntegrationID, res.MonitorToken, err = seedIntegration(ctx, tx, res, "monitor", domain.CapabilityIncidentInput, cfg.MonitorToken,

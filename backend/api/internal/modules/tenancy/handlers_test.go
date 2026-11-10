@@ -130,7 +130,7 @@ func TestCreateComponentValidation(t *testing.T) {
 	}
 
 	list := testutil.Decode[struct{ Items []component }](t, testutil.GetJSON(t, h, path, a.AdminToken))
-	if len(list.Items) != 4 { // 2 seeded + ledger (staging) + ledger (production)
+	if len(list.Items) != 5 { // 3 seeded + ledger (staging) + ledger (production)
 		t.Fatalf("components: %+v", list.Items)
 	}
 
