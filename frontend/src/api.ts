@@ -58,18 +58,26 @@ export async function apiFetch<T>(method: string, path: string, body?: unknown):
     throw new ApiError(401, "unauthorized", "Your token was not accepted.", res.headers.get("X-Request-ID"));
   }
   if (!res.ok) {
-    let code = "http_error";
-    let message = `Request failed (${res.status}).`;
-    let requestId = res.headers.get("X-Request-ID");
+    const requestId = res.headers.get("X-Request-ID");
+    let data: { error?: { code?: string; message?: string }; request_id?: string } | null = null;
     try {
-      const data = await res.json();
-      code = data?.error?.code ?? code;
-      message = data?.error?.message ?? message;
-      requestId = data?.request_id ?? requestId;
+      data = await res.json();
     } catch {
-      // Not JSON; keep the generic message.
+      // Not JSON: the API always answers errors in JSON, so this came from
+      // something in between, such as the dev server's proxy.
     }
-    throw new ApiError(res.status, code, message, requestId);
+    if (data?.error) {
+      throw new ApiError(res.status, data.error.code ?? "http_error", data.error.message ?? `Request failed (${res.status}).`, data.request_id ?? requestId);
+    }
+    if (res.status >= 500) {
+      throw new ApiError(
+        res.status,
+        "api_unreachable",
+        "Couldn't reach the Sentinel API. Check that it is running and that the dev server proxies to its port (PORT in .env).",
+        requestId,
+      );
+    }
+    throw new ApiError(res.status, "http_error", `Request failed (${res.status}).`, requestId);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;

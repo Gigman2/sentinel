@@ -11,7 +11,7 @@ npm install
 npm run dev           # http://localhost:5173, proxying /v1 to the API
 ```
 
-Sign in with the admin token printed by the first `make run` (or the `SEED_ADMIN_TOKEN` in `.env`). If the API listens on another port, start Vite with the same `PORT`, e.g. `PORT=9090 npm run dev`.
+Sign in with the admin token printed by the first `make run` (or the `SEED_ADMIN_TOKEN` in `.env`). The dev server proxies to the API's `PORT`, taken from the environment first and then the repo's `.env`, the same rule as `make run`. The default is 8080. If the API can't be reached, sign-in says so instead of showing a bare 500.
 
 ## Scripts
 
