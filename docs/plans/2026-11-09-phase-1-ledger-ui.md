@@ -268,7 +268,7 @@ PR `feat/p1-13-revisions`.
 PR `feat/p1-14-summary-steps`.
 
 **Files:**
-- Create: `backend/api/migrations/0007_summary_steps.sql`, `backend/worker/sentinel_worker/summary.py`, `backend/worker/tests/test_summary.py`.
+- Create: `backend/api/migrations/0008_summary_steps.sql` (0007 went to `revision_events`), `backend/worker/sentinel_worker/summary.py`, `backend/worker/tests/test_summary.py`.
 - Modify: `sentinel_worker/{main.py,store.py,models.py}`, `analysis/{jobs.go,store.go}`, frontend `AnalysisPanel.tsx`, `IncidentDetail.tsx`, `src/components/Summary.tsx` (new).
 - Test: `test_summary.py`, `test_main.py`, `analysis/jobs_test.go`, `IncidentDetail.test.tsx`.
 

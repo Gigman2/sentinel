@@ -10,7 +10,7 @@ const detailPath = `/v1/incidents/${INCIDENT_ID}`;
 
 function pending(): Incident {
   const inc = referenceIncident();
-  return { ...inc, analysis: { status: "pending", last_error: null, started_at: null, finished_at: null, revision_count: 0, latest_revision: null } };
+  return { ...inc, analysis: { status: "pending", last_error: null, started_at: null, finished_at: null, revision_count: 0, step: null, step_started_at: null, latest_revision: null } };
 }
 
 beforeEach(() => {
@@ -361,6 +361,80 @@ describe("incident detail", () => {
       "Logs—Not connected",
       "Metrics—Not connected",
     ]);
+  });
+
+  describe("summary and steps", () => {
+    function render_(inc: Incident) {
+      mockFetch({
+        "GET /v1/projects": () => projects,
+        [`GET ${detailPath}`]: () => inc,
+        [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+      });
+      render(<App />);
+    }
+
+    it("renders times in mono and the unknown cause in bold, as text", async () => {
+      const inc = referenceIncident();
+      inc.analysis.latest_revision!.summary = [
+        { text: "Alert <b>fired</b> at ", kind: "text" },
+        { text: "14:09", kind: "time" },
+        { text: ". Deployment information unavailable. ", kind: "text" },
+        { text: "Cause: Unknown.", kind: "strong" },
+      ];
+      render_(inc);
+      const summary = await screen.findByRole("region", { name: "Summary" });
+      expect(within(summary).getByText("Built only from the 5 findings below")).toBeInTheDocument();
+      expect(within(summary).getByText("Revision 1")).toBeInTheDocument();
+      expect(within(summary).getByText("14:09")).toHaveClass("mono");
+      expect(within(summary).getByText("Cause: Unknown.").tagName).toBe("B");
+      // Server text is never parsed as HTML.
+      expect(within(summary).getByText(/Alert <b>fired<\/b> at/)).toBeInTheDocument();
+      expect(summary.querySelectorAll("b")).toHaveLength(1);
+    });
+
+    it("says when a revision has no summary", async () => {
+      const inc = referenceIncident();
+      inc.analysis.latest_revision!.summary = [];
+      render_(inc);
+      const summary = await screen.findByRole("region", { name: "Summary" });
+      expect(within(summary).getByText("Not available")).toBeInTheDocument();
+      expect(within(summary).getByText(/No summary was written for this revision/)).toBeInTheDocument();
+    });
+
+    it("lists the steps while running", async () => {
+      const inc = pending();
+      inc.analysis = { ...inc.analysis, status: "running", started_at: "2026-11-09T14:09:14Z", step: "draft_findings", step_started_at: "2026-11-09T14:09:20Z" };
+      render_(inc);
+      const steps = await screen.findByRole("list", { name: "Analysis steps" });
+      expect(within(steps).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+        "✓Collect evidencedone",
+        "●Draft findingsrunning",
+        "○Save revisionqueued",
+      ]);
+      expect(within(await screen.findByRole("region", { name: "Summary" })).getByText("Not available yet")).toBeInTheDocument();
+    });
+
+    it("names the step a failed analysis stopped at", async () => {
+      const inc = pending();
+      inc.analysis = { ...inc.analysis, status: "failed", last_error: "RuntimeError: rule exploded", started_at: "2026-11-09T14:09:14Z", finished_at: "2026-11-09T14:10:15Z", step: "draft_findings", step_started_at: "2026-11-09T14:09:20Z" };
+      render_(inc);
+      expect(await screen.findByText("Analysis failed at step 2 of 3: Draft findings")).toBeInTheDocument();
+      expect(screen.getByText("RuntimeError: rule exploded")).toBeInTheDocument();
+      const steps = screen.getByRole("list", { name: "Analysis steps" });
+      expect(within(steps).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+        "✓Collect evidencedone",
+        "✕Draft findingsfailed",
+        "○Save revisionnot run",
+      ]);
+    });
+
+    it("shows a job waiting to retry at the step that failed", async () => {
+      const inc = pending();
+      inc.analysis = { ...inc.analysis, status: "pending", started_at: "2026-11-09T14:09:14Z", step: "draft_findings", step_started_at: "2026-11-09T14:09:20Z" };
+      render_(inc);
+      const steps = await screen.findByRole("list", { name: "Analysis steps" });
+      expect(within(steps).getAllByRole("listitem")[1]).toHaveTextContent("Draft findingswaiting to retry");
+    });
   });
 });
 

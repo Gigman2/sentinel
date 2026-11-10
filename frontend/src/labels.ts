@@ -1,5 +1,5 @@
 // Human labels for API values.
-import type { AnalysisStatus, Disposition, EventType, EvidenceSourceStatus, FindingKind, LinkReason } from "./types";
+import type { AnalysisStatus, AnalysisStep, Disposition, EventType, EvidenceSourceStatus, FindingKind, LinkReason } from "./types";
 
 export const EVENT_LABEL: Record<EventType, string> = {
   "alert.triggered": "Alert",
@@ -73,3 +73,10 @@ export const SOURCE_STATUS_TONE: Record<EvidenceSourceStatus, string> = {
   no_matching_data: "var(--major)",
   not_connected: "var(--fg3)",
 };
+
+/** The worker's steps, in order. */
+export const STEPS: { step: AnalysisStep; label: string }[] = [
+  { step: "collect_evidence", label: "Collect evidence" },
+  { step: "draft_findings", label: "Draft findings" },
+  { step: "save_revision", label: "Save revision" },
+];

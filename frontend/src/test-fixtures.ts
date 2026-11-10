@@ -36,10 +36,19 @@ export function referenceIncident(over: Partial<Incident> = {}): Incident {
       started_at: "2026-11-09T14:09:14Z",
       finished_at: "2026-11-09T14:09:48Z",
       revision_count: 1,
+      step: "save_revision",
+      step_started_at: "2026-11-09T14:09:47Z",
       latest_revision: {
         id: "rev-1",
         revision_number: 1,
         created_at: "2026-11-09T14:09:48Z",
+        summary: [
+          { text: "The payment-service alert 'Payment errors affecting checkout' first fired at ", kind: "text" },
+          { text: "14:09", kind: "time" },
+          { text: ". Version 1.8.4 was deployed at ", kind: "text" },
+          { text: "14:02", kind: "time" },
+          { text: ". Investigate next: inspect payment-service logs and metrics from 13:39 UTC to 14:24 UTC.", kind: "text" },
+        ],
         findings: [
           { kind: "observation", rule_id: "trigger_alert", text: "payment-service alert 'Payment errors affecting checkout' first fired at 14:09 UTC.", limitations: null, evidence_ids: ["evt-alert"] },
           { kind: "observation", rule_id: "deployment_in_window", text: "payment-service version 1.8.4 was deployed at 14:02 UTC.", limitations: null, evidence_ids: ["evt-deploy"] },

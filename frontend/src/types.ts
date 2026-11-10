@@ -76,10 +76,20 @@ export interface Finding {
   evidence_ids: string[];
 }
 
+export interface SummarySegment {
+  text: string;
+  /** "time" is an HH:MM UTC time that appears in a finding. */
+  kind: "text" | "time" | "strong";
+}
+
+export type AnalysisStep = "collect_evidence" | "draft_findings" | "save_revision";
+
 export interface Revision {
   id: string;
   revision_number: number;
   created_at: string;
+  /** Built only from `findings`; empty for revisions from before summaries. */
+  summary: SummarySegment[];
   findings: Finding[];
 }
 
@@ -92,6 +102,9 @@ export interface Analysis {
   /** When the newest job succeeded or failed. */
   finished_at: string | null;
   revision_count: number;
+  /** The newest job's current step, or the one it failed at. */
+  step: AnalysisStep | null;
+  step_started_at: string | null;
   latest_revision: Revision | null;
 }
 

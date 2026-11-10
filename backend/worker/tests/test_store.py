@@ -228,3 +228,16 @@ def test_expired_last_attempt_records_finished_at(conn, seeded):
     assert store.lease_job(conn) is None
     row = job_row(conn, job.id)
     assert row["status"] == "failed" and row["finished_at"] is not None
+
+
+def test_set_step_is_lease_guarded(conn, seeded):
+    make_simple_incident(conn, seeded)
+    stale = store.lease_job(conn)
+    assert store.set_step(conn, stale, "collect_evidence") is True
+    expire_lease(conn, stale.id)
+    fresh = store.lease_job(conn)
+    assert store.set_step(conn, stale, "draft_findings") is False
+    assert job_row(conn, stale.id)["step"] == "collect_evidence"
+    assert store.set_step(conn, fresh, "draft_findings") is True
+    with pytest.raises(ValueError):
+        store.set_step(conn, fresh, "nap")

@@ -102,8 +102,12 @@ type View struct {
 	// StartedAt and FinishedAt are the newest job's first lease and terminal
 	// transition; null when it has not started or finished, or when it
 	// predates their recording.
-	StartedAt      *time.Time `json:"started_at"`
-	FinishedAt     *time.Time `json:"finished_at"`
+	StartedAt  *time.Time `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at"`
+	// Step is the newest job's current step, or the one it failed at:
+	// collect_evidence, draft_findings or save_revision. Null before it starts.
+	Step           *string    `json:"step"`
+	StepStartedAt  *time.Time `json:"step_started_at"`
 	RevisionCount  int        `json:"revision_count"`
 	LatestRevision *Revision  `json:"latest_revision"`
 }
@@ -113,7 +117,17 @@ type Revision struct {
 	ID             string    `json:"id"`
 	RevisionNumber int       `json:"revision_number"`
 	CreatedAt      time.Time `json:"created_at"`
-	Findings       []Finding `json:"findings"`
+	// Summary is built by the worker only from Findings; empty for
+	// revisions written before summaries existed.
+	Summary  []Segment `json:"summary"`
+	Findings []Finding `json:"findings"`
+}
+
+// Segment is one run of summary text. Kind is "text", "time" (an HH:MM UTC
+// time that appears in a finding) or "strong".
+type Segment struct {
+	Text string `json:"text"`
+	Kind string `json:"kind"`
 }
 
 // Finding is one statement in a revision, with the events it cites.
@@ -136,6 +150,7 @@ func Read(ctx context.Context, q database.DBTX, incidentID string) (View, error)
 	case err == nil:
 		v.Status, v.LastError = job.Status, job.LastError
 		v.StartedAt, v.FinishedAt = utcPtr(job.StartedAt), utcPtr(job.FinishedAt)
+		v.Step, v.StepStartedAt = job.Step, utcPtr(job.StepStartedAt)
 	case !errors.Is(err, pgx.ErrNoRows):
 		return View{}, fmt.Errorf("read analysis job: %w", err)
 	}
@@ -167,7 +182,11 @@ func withFindings(ctx context.Context, q database.DBTX, rev revisionRow) (Revisi
 	if findings == nil {
 		findings = []Finding{}
 	}
-	return Revision{ID: rev.ID, RevisionNumber: rev.RevisionNumber, CreatedAt: rev.CreatedAt.UTC(), Findings: findings}, nil
+	summary := rev.Summary
+	if summary == nil {
+		summary = []Segment{}
+	}
+	return Revision{ID: rev.ID, RevisionNumber: rev.RevisionNumber, CreatedAt: rev.CreatedAt.UTC(), Summary: summary, Findings: findings}, nil
 }
 
 func utcPtr(t *time.Time) *time.Time {
