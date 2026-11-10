@@ -78,12 +78,34 @@ func componentDest(c *Component) []any {
 	return []any{&c.ID, &c.ProjectID, &c.Environment, &c.Slug, &c.DisplayName, &c.Kind, &c.Description, &c.Owner, &c.CreatedAt}
 }
 
-// componentScope returns a component's environment if it is in projectID.
-// pgx.ErrNoRows otherwise.
-func componentScope(ctx context.Context, q database.DBTX, projectID, componentID string) (string, error) {
-	var env string
-	err := q.QueryRow(ctx, `SELECT environment FROM components WHERE id = $1 AND project_id = $2`, componentID, projectID).Scan(&env)
-	return env, err
+// scopedRef is a component with its environment.
+type scopedRef struct {
+	ComponentRef
+	Environment string
+}
+
+// componentRefs returns the components among ids that are in projectID,
+// keyed by ID.
+func componentRefs(ctx context.Context, q database.DBTX, projectID string, ids ...string) (map[string]scopedRef, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id::text, slug, display_name, kind, environment FROM components
+		WHERE project_id = $1 AND id = ANY($2::uuid[])`, projectID, ids)
+	if err != nil {
+		return nil, err
+	}
+	refs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (scopedRef, error) {
+		var r scopedRef
+		err := row.Scan(&r.ID, &r.Slug, &r.DisplayName, &r.Kind, &r.Environment)
+		return r, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]scopedRef, len(refs))
+	for _, r := range refs {
+		out[r.ID] = r
+	}
+	return out, nil
 }
 
 func insertDependency(ctx context.Context, q database.DBTX, projectID, environment, from, to string) (time.Time, error) {
@@ -110,7 +132,7 @@ func listDependencies(ctx context.Context, q database.DBTX, projectID string) ([
 		JOIN components f ON f.id = d.from_component_id
 		JOIN components t ON t.id = d.to_component_id
 		WHERE d.project_id = $1
-		ORDER BY d.environment, f.slug, t.slug`, projectID)
+		ORDER BY d.environment, f.display_name, f.slug, t.display_name, t.slug`, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -135,11 +157,11 @@ func downstream(ctx context.Context, q database.DBTX, componentID string) ([]Dow
 		    JOIN d1 ON d1.id = e.from_component_id
 		    JOIN components v ON v.id = e.from_component_id
 		    WHERE e.to_component_id <> $1 AND e.to_component_id NOT IN (SELECT id FROM d1)
-		    ORDER BY e.to_component_id, v.slug)
+		    ORDER BY e.to_component_id, v.display_name, v.slug)
 		SELECT c.id::text, c.slug, c.display_name, c.kind, 1, NULL::text FROM d1 JOIN components c ON c.id = d1.id
 		UNION ALL
 		SELECT c.id::text, c.slug, c.display_name, c.kind, 2, d2.via::text FROM d2 JOIN components c ON c.id = d2.id
-		ORDER BY 5, 2`, componentID)
+		ORDER BY 5, 3, 2`, componentID)
 	if err != nil {
 		return nil, err
 	}

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -221,5 +222,85 @@ func TestDependenciesOtherOrg404(t *testing.T) {
 	var n int
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM component_dependencies WHERE project_id = $1`, f.s.ProjectID).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("edges after other-org calls: %d %v", n, err)
+	}
+}
+
+// External components show their display name, so lists sort by it.
+func TestDependenciesOrderedByDisplayName(t *testing.T) {
+	f := newDepFixture(t)
+	svc := f.s.Components["payment-service"]
+	mk := func(slug, name string) string {
+		w := testutil.PostJSON(t, f.h, "/v1/projects/"+f.s.ProjectID+"/components", f.s.AdminToken,
+			map[string]any{"slug": slug, "display_name": name, "environment": "production", "kind": "external"})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("component %s: %d %s", slug, w.Code, w.Body)
+		}
+		return testutil.Decode[struct{ ID string }](t, w).ID
+	}
+	f.mustAdd(svc, mk("a-vendor", "Zeta Pay"))
+	f.mustAdd(svc, mk("z-vendor", "Acme Bank"))
+
+	var slugs []string
+	for _, d := range f.detailDeps(f.openIncident()) {
+		slugs = append(slugs, d.Component.Slug)
+	}
+	if i, j := slices.Index(slugs, "z-vendor"), slices.Index(slugs, "a-vendor"); i < 0 || j < 0 || i > j {
+		t.Fatalf("detail order: %v", slugs)
+	}
+	list := testutil.Decode[struct {
+		Items []struct{ To struct{ Slug string } }
+	}](t, testutil.GetJSON(t, f.h, "/v1/projects/"+f.s.ProjectID+"/dependencies", f.s.AdminToken)).Items
+	slugs = nil
+	for _, d := range list {
+		slugs = append(slugs, d.To.Slug)
+	}
+	if i, j := slices.Index(slugs, "z-vendor"), slices.Index(slugs, "a-vendor"); i < 0 || j < 0 || i > j {
+		t.Fatalf("list order: %v", slugs)
+	}
+}
+
+// A component deleted while a dependency on it is being added gives a
+// 400, not a server error. The delete holds its row lock until the insert
+// is waiting on it, then commits.
+func TestAddDependencyComponentDeletedConcurrently(t *testing.T) {
+	f := newDepFixture(t)
+	ctx := context.Background()
+	svc := f.s.Components["payment-service"]
+	doomed := f.component("doomed", "production", "")
+
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM components WHERE id = $1`, doomed); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan *httptest.ResponseRecorder)
+	go func() { done <- f.add(svc, doomed) }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting bool
+		if err := f.pool.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'
+			  AND query LIKE '%INSERT INTO component_dependencies%')`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("insert never waited on the delete's lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if w := <-done; w.Code != http.StatusBadRequest || testutil.ErrorCode(t, w) != "invalid_dependency" {
+		t.Fatalf("add: %d %s", w.Code, w.Body)
 	}
 }

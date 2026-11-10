@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/Gigman2/sentinel/backend/api/internal/platform/database"
 	"github.com/Gigman2/sentinel/backend/api/internal/platform/httpx"
 )
@@ -63,37 +61,32 @@ func (s Service) AddDependency(ctx context.Context, orgID, projectID, from, to s
 	if from == to {
 		return Dependency{}, invalidDependency("a component cannot depend on itself")
 	}
-	fromEnv, err := componentScope(ctx, s.DB, projectID, from)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Dependency{}, invalidDependency("from is not a component of this project")
-	} else if err != nil {
-		return Dependency{}, err
-	}
-	toEnv, err := componentScope(ctx, s.DB, projectID, to)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Dependency{}, invalidDependency("to is not a component of this project")
-	} else if err != nil {
-		return Dependency{}, err
-	}
-	if fromEnv != toEnv {
-		return Dependency{}, invalidDependency("both components must be in the same environment")
-	}
-	if _, err := insertDependency(ctx, s.DB, projectID, fromEnv, from, to); err != nil {
-		if _, dup := database.UniqueViolation(err); dup {
-			return Dependency{}, &httpx.Error{Status: http.StatusConflict, Code: "duplicate", Message: "this dependency is already registered"}
-		}
-		return Dependency{}, err
-	}
-	all, err := listDependencies(ctx, s.DB, projectID)
+	refs, err := componentRefs(ctx, s.DB, projectID, from, to)
 	if err != nil {
 		return Dependency{}, err
 	}
-	for _, d := range all {
-		if d.From.ID == from && d.To.ID == to {
-			return d, nil
-		}
+	f, ok := refs[from]
+	if !ok {
+		return Dependency{}, invalidDependency("from is not a component of this project")
 	}
-	return Dependency{}, ErrDependencyNotFound // deleted concurrently
+	t, ok := refs[to]
+	if !ok {
+		return Dependency{}, invalidDependency("to is not a component of this project")
+	}
+	if f.Environment != t.Environment {
+		return Dependency{}, invalidDependency("both components must be in the same environment")
+	}
+	at, err := insertDependency(ctx, s.DB, projectID, f.Environment, from, to)
+	switch {
+	case err == nil:
+		return Dependency{From: f.ComponentRef, To: t.ComponentRef, Environment: f.Environment, CreatedAt: at}, nil
+	case database.ForeignKeyViolation(err): // a component was deleted after we read it
+		return Dependency{}, invalidDependency("a component of this dependency no longer exists")
+	}
+	if _, dup := database.UniqueViolation(err); dup {
+		return Dependency{}, &httpx.Error{Status: http.StatusConflict, Code: "duplicate", Message: "this dependency is already registered"}
+	}
+	return Dependency{}, err
 }
 
 // RemoveDependency unregisters "from calls to".

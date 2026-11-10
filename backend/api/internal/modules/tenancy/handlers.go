@@ -77,12 +77,11 @@ func (h Handlers) AddDependency(w http.ResponseWriter, r *http.Request) {
 
 // RemoveDependency handles DELETE /v1/projects/{projectId}/dependencies/{fromId}/{toId}.
 func (h Handlers) RemoveDependency(w http.ResponseWriter, r *http.Request) {
-	err := h.Service.RemoveDependency(r.Context(), org(r), r.PathValue("projectId"), r.PathValue("fromId"), r.PathValue("toId"))
-	if err == nil {
-		w.WriteHeader(http.StatusNoContent)
+	if err := h.Service.RemoveDependency(r.Context(), org(r), r.PathValue("projectId"), r.PathValue("fromId"), r.PathValue("toId")); err != nil {
+		h.respond(w, r, 0, nil, err)
 		return
 	}
-	h.respond(w, r, http.StatusNoContent, nil, err)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func org(r *http.Request) string { return auth.PrincipalFrom(r.Context()).OrganizationID }

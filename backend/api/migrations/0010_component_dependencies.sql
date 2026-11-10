@@ -22,6 +22,9 @@ CREATE TABLE component_dependencies (
         REFERENCES components (id, project_id, environment) ON DELETE CASCADE
 );
 CREATE INDEX ix_component_dependencies_project ON component_dependencies (project_id, created_at);
+-- The primary key covers lookups by from_component_id; this one serves
+-- cascades when a callee component is deleted.
+CREATE INDEX ix_component_dependencies_to ON component_dependencies (to_component_id);
 
 -- +goose Down
 DROP TABLE component_dependencies;
