@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ApiError, apiFetch, describeError } from "../api";
 import { utcTime } from "../format";
 import type { CheckStatus, Finding, FindingFeedback, TimelineItem, Verdict } from "../types";
@@ -7,70 +7,67 @@ import { EvidenceChip } from "./EvidenceChip";
 /** The feedback after the viewer changes their verdict to `next` (null clears it). */
 function withVerdict(fb: FindingFeedback, next: Verdict | null): FindingFeedback {
   const out = { ...fb, mine: next };
-  if (fb.mine) out[fb.mine] -= 1;
+  if (fb.mine) out[fb.mine] = Math.max(0, out[fb.mine] - 1);
   if (next) out[next] += 1;
   return out;
 }
+
+/** A change the server confirmed, kept by the page above the polled data. */
+export type SavedPatch = { feedback?: FindingFeedback; check?: CheckStatus };
 
 export function FindingRow({
   finding,
   tag,
   events,
   onCite,
+  onSaved,
 }: {
   finding: Finding;
   tag: string | null;
   events: Map<string, TimelineItem>;
   onCite: (id: string) => void;
+  /** Called with what the server returned, so the page keeps it across
+   * re-renders, layout switches and polls that started before the save. */
+  onSaved: (findingId: string, patch: SavedPatch) => void;
 }) {
   const kind = finding.kind;
   const cited = [...new Set(finding.evidence_ids)];
 
-  // Shown immediately on click and rolled back if the request fails. A
-  // fresh read (polling, a new revision) replaces them unless a request is
-  // in flight.
-  const [fb, setFb] = useState(finding.feedback);
-  const [check, setCheck] = useState<CheckStatus | null>(finding.check);
-  const [busy, setBusy] = useState(false);
+  // While a request is in flight the click shows immediately; afterwards
+  // the row shows `finding` again, which the page has patched with the
+  // server's answer (or left alone, after a failure).
+  const [pending, setPending] = useState<SavedPatch | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (busy) return;
-    setFb(finding.feedback);
-    setCheck(finding.check);
-  }, [finding.feedback, finding.check]); // busy is read, not watched: a finished request must not reset
+  const busy = pending !== null;
+  const fb = pending?.feedback ?? finding.feedback;
+  const check = pending?.check ?? finding.check;
 
   async function vote(v: Verdict) {
-    const prev = fb;
     const next = fb.mine === v ? null : v; // clicking your verdict again clears it
-    setFb(withVerdict(prev, next));
-    setBusy(true);
+    setPending({ feedback: withVerdict(fb, next) });
     setError(null);
     try {
       const path = `/v1/findings/${finding.id}/feedback`;
-      if (next) setFb(await apiFetch<FindingFeedback>("PUT", path, { verdict: next }));
-      else await apiFetch("DELETE", path);
+      const saved = next ? await apiFetch<FindingFeedback>("PUT", path, { verdict: next }) : await apiFetch<FindingFeedback>("DELETE", path);
+      onSaved(finding.id, { feedback: saved });
     } catch (e) {
-      setFb(prev);
       if (!(e instanceof ApiError && e.status === 401)) setError(`Feedback wasn't saved: ${describeError(e)}`);
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }
 
   async function toggleDone() {
     if (!check) return;
-    const prev = check;
     const done = !check.done;
-    setCheck(done ? { done: true, done_by: null, done_at: null } : { done: false, done_by: null, done_at: null });
-    setBusy(true);
+    setPending({ check: { done, done_by: null, done_at: null } });
     setError(null);
     try {
-      setCheck(await apiFetch<CheckStatus>("PUT", `/v1/findings/${finding.id}/check`, { done }));
+      onSaved(finding.id, { check: await apiFetch<CheckStatus>("PUT", `/v1/findings/${finding.id}/check`, { done }) });
     } catch (e) {
-      setCheck(prev);
       if (!(e instanceof ApiError && e.status === 401)) setError(`Couldn't update the check: ${describeError(e)}`);
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }
 

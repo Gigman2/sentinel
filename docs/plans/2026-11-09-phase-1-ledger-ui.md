@@ -328,7 +328,7 @@ PR `feat/p1-15-feedback`.
   - `next_check_status (finding_id uuid PRIMARY KEY REFERENCES findings ON DELETE CASCADE, done_by_user_id uuid REFERENCES users, done_at timestamptz)`.
 - **Endpoints:**
   - `PUT /v1/findings/{findingId}/feedback {verdict}` → 200 with the finding's feedback. An invalid verdict returns 400 `invalid_verdict`.
-  - `DELETE /v1/findings/{findingId}/feedback` → 204.
+  - `DELETE /v1/findings/{findingId}/feedback` → 200 with the finding's feedback (changed after review from 204, so the client shows current counts).
   - `PUT /v1/findings/{findingId}/check {done: bool}` → 200. A finding that isn't `next_check` returns 400 `not_a_check`.
   - Every endpoint is organisation-scoped through finding → revision → incident.
 - **`analysis.Finding` adds:**

@@ -188,11 +188,10 @@ func revisionFindings(ctx context.Context, q database.DBTX, revisionID, viewerID
 		       COALESCE((SELECT array_agg(e.id::text ORDER BY e.occurred_at, e.id)
 		                 FROM finding_evidence fe JOIN operational_events e ON e.id = fe.event_id
 		                 WHERE fe.finding_id = f.id), '{}'),
-		       (SELECT count(*)::int FROM finding_feedback fb WHERE fb.finding_id = f.id AND fb.verdict = 'useful'),
-		       (SELECT count(*)::int FROM finding_feedback fb WHERE fb.finding_id = f.id AND fb.verdict = 'incorrect'),
-		       (SELECT fb.verdict FROM finding_feedback fb WHERE fb.finding_id = f.id AND fb.user_id::text = $2),
+		       fb.useful, fb.incorrect, fb.mine,
 		       cs.done_at, u.id::text, u.display_name
 		FROM findings f
+		CROSS JOIN LATERAL (`+feedbackOf("f.id", "$2")+`) fb
 		LEFT JOIN next_check_status cs ON cs.finding_id = f.id
 		LEFT JOIN users u ON u.id = cs.done_by_user_id
 		WHERE f.revision_id = $1
@@ -213,6 +212,25 @@ func revisionFindings(ctx context.Context, q database.DBTX, revisionID, viewerID
 		}
 		return f, err
 	})
+}
+
+// feedbackOf is the one definition of a finding's feedback: one pass over
+// its rows, counting each verdict and picking the viewer's own. finding is a
+// SQL expression for the finding ID and viewer a placeholder for the user
+// ID (an empty viewer matches no one).
+func feedbackOf(finding, viewer string) string {
+	return `SELECT count(*) FILTER (WHERE verdict = 'useful')::int AS useful,
+	               count(*) FILTER (WHERE verdict = 'incorrect')::int AS incorrect,
+	               max(verdict) FILTER (WHERE user_id = NULLIF(` + viewer + `, '')::uuid) AS mine
+	        FROM finding_feedback WHERE finding_id = ` + finding
+}
+
+// FeedbackFor returns one finding's feedback as viewerID sees it, using the
+// same definition as the read model.
+func FeedbackFor(ctx context.Context, q database.DBTX, findingID, viewerID string) (Feedback, error) {
+	var fb Feedback
+	err := q.QueryRow(ctx, feedbackOf("$1::uuid", "$2"), findingID, viewerID).Scan(&fb.Useful, &fb.Incorrect, &fb.Mine)
+	return fb, err
 }
 
 // CheckFrom builds a next check's status from its next_check_status row

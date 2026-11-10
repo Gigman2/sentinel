@@ -59,8 +59,8 @@ func (s Service) SetVerdict(ctx context.Context, orgID, userID, findingID, verdi
 	if err != nil {
 		return analysis.Feedback{}, err
 	}
-	var fb analysis.Feedback
-	if fb.Useful, fb.Incorrect, fb.Mine, err = feedbackSummary(ctx, tx, findingID, userID); err != nil {
+	fb, err := analysis.FeedbackFor(ctx, tx, findingID, userID)
+	if err != nil {
 		return analysis.Feedback{}, err
 	}
 	return fb, tx.Commit(ctx)

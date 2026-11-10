@@ -476,5 +476,63 @@ describe("incident detail", () => {
       expect(within(steps).getAllByRole("listitem")[1]).toHaveTextContent("Draft findingswaiting to retry");
     });
   });
+
+  describe("saved feedback", () => {
+    it("keeps a vote after switching the findings layout", async () => {
+      mockFetch({
+        "GET /v1/projects": () => projects,
+        [`GET ${detailPath}`]: () => referenceIncident(),
+        [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+        "PUT /v1/findings/f-1/feedback": () => ({ useful: 1, incorrect: 0, mine: "useful" }),
+      });
+      render(<App />);
+      const observed = await screen.findByRole("region", { name: "Observed" });
+      await userEvent.click(within(observed).getAllByRole("button", { name: /^Useful/ })[0]);
+      await waitFor(() => expect(within(observed).getAllByRole("button", { name: /^Useful/ })[0]).toHaveAttribute("aria-pressed", "true"));
+
+      await userEvent.click(screen.getByRole("button", { name: "Stream" }));
+      await userEvent.click(screen.getByRole("button", { name: "By type" }));
+      const again = screen.getByRole("region", { name: "Observed" });
+      expect(within(again).getAllByRole("button", { name: /^Useful/ })[0]).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("a poll answered after the save does not undo it", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const running = referenceIncident();
+      running.analysis = { ...running.analysis, status: "running", finished_at: null };
+      let stale!: () => void;
+      let polls = 0;
+      mockFetch({
+        "GET /v1/projects": () => projects,
+        // The first read answers at once; the second (the poll) is held back
+        // until after the vote is saved, then answers with pre-vote data.
+        [`GET ${detailPath}`]: () => (++polls === 1 ? running : new Promise((r) => { stale = () => r(running); })),
+        [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+        "PUT /v1/findings/f-1/feedback": () => ({ useful: 1, incorrect: 0, mine: "useful" }),
+      });
+      render(<App />);
+      const observed = await screen.findByRole("region", { name: "Observed" });
+      await act(() => vi.advanceTimersByTimeAsync(3000)); // the poll starts
+      await waitFor(() => expect(stale).toBeDefined());
+      const useful = () => within(screen.getByRole("region", { name: "Observed" })).getAllByRole("button", { name: /^Useful/ })[0];
+      await userEvent.click(within(observed).getAllByRole("button", { name: /^Useful/ })[0]);
+      await waitFor(() => expect(useful()).toBeEnabled());
+      await act(async () => stale());
+      expect(useful()).toHaveAttribute("aria-pressed", "true");
+      expect(useful()).toHaveTextContent("Useful1");
+    });
+
+    it("never shows a negative count", async () => {
+      let release!: () => void;
+      mockFetch({ "PUT /v1/findings/f-1/feedback": () => new Promise((r) => { release = () => r({ useful: 0, incorrect: 1, mine: "incorrect" }); }) });
+      const inc = referenceIncident();
+      const fs = inc.analysis.latest_revision!.findings.map((f) => (f.id === "f-1" ? { ...f, feedback: { useful: 0, incorrect: 0, mine: "useful" as const } } : f));
+      const { Findings } = await import("../components/Findings");
+      render(<Findings findings={fs} events={new Map()} layout="stream" onCite={() => {}} onSaved={() => {}} />);
+      await userEvent.click(screen.getAllByRole("button", { name: /^Incorrect/ })[0]);
+      expect(screen.getAllByRole("button", { name: /^Useful/ })[0]).toHaveAttribute("title", "0 engineers marked this useful");
+      await act(async () => release());
+    });
+  });
 });
 

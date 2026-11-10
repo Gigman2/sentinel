@@ -8,7 +8,8 @@ import { StagePills } from "../components/StagePills";
 import { Summary } from "../components/Summary";
 import { Timeline } from "../components/Timeline";
 import { shortId, utcTime } from "../format";
-import type { Incident, Page, Revision, TimelineItem } from "../types";
+import type { Finding, Incident, Page, Revision, TimelineItem } from "../types";
+import type { SavedPatch } from "../components/FindingRow";
 
 const POLL_MS = 3000;
 
@@ -33,6 +34,12 @@ export function IncidentDetail({ id }: { id: string }) {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const noticeTimer = useRef<number>();
+  // Feedback and checks the server confirmed during this visit, by finding.
+  // They are laid over every read, so a re-render, a layout switch or a poll
+  // that started before the save cannot show the old value.
+  const [saved, setSaved] = useState<Record<string, SavedPatch>>({});
+  const onSaved = useCallback((findingId: string, patch: SavedPatch) => setSaved((s) => ({ ...s, [findingId]: { ...s[findingId], ...patch } })), []);
+  const withSaved = useCallback((fs: Finding[]) => fs.map((f) => (saved[f.id] ? { ...f, ...saved[f.id] } : f)), [saved]);
   // A superseded revision being viewed instead of the latest.
   const [old, setOld] = useState<{ n: number; supersededAt: string | null; revision: Revision | null; error: string | null } | null>(null);
 
@@ -257,7 +264,7 @@ export function IncidentDetail({ id }: { id: string }) {
             {old && !old.revision && !old.error && <span className="muted">Loading revision {old.n}…</span>}
             {rev && (
               <>
-                <Findings findings={rev.findings} events={byId} layout={layout} onCite={cite} />
+                <Findings findings={withSaved(rev.findings)} events={byId} layout={layout} onCite={cite} onSaved={onSaved} />
                 <span className="mono muted small revision-line" title={rev.created_at}>
                   Analysis revision {rev.revision_number} from {utcTime(rev.created_at, { seconds: true }).text}
                 </span>

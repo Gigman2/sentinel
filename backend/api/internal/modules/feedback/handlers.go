@@ -34,15 +34,17 @@ func (h Handlers) PutFeedback(w http.ResponseWriter, r *http.Request) {
 	h.respond(w, r, "set feedback", http.StatusOK, fb, err)
 }
 
-// DeleteFeedback handles DELETE /v1/findings/{findingId}/feedback.
+// DeleteFeedback handles DELETE /v1/findings/{findingId}/feedback. It
+// answers 200 with the finding's feedback, like PUT, so the client shows
+// everyone's current counts rather than its own estimate.
 func (h Handlers) DeleteFeedback(w http.ResponseWriter, r *http.Request) {
 	if !httpx.IsUUID(r.PathValue("findingId")) {
 		writeNotFound(w, r)
 		return
 	}
 	p := auth.PrincipalFrom(r.Context())
-	_, err := h.Service.SetVerdict(r.Context(), p.OrganizationID, p.UserID, r.PathValue("findingId"), "")
-	h.respond(w, r, "clear feedback", http.StatusNoContent, nil, err)
+	fb, err := h.Service.SetVerdict(r.Context(), p.OrganizationID, p.UserID, r.PathValue("findingId"), "")
+	h.respond(w, r, "clear feedback", http.StatusOK, fb, err)
 }
 
 // PutCheck handles PUT /v1/findings/{findingId}/check {done}.
@@ -86,8 +88,6 @@ func (h Handlers) respond(w http.ResponseWriter, r *http.Request, what string, s
 	case err != nil:
 		h.Log.Error(what, "err", err, "request_id", httpx.RequestIDFrom(r.Context()))
 		httpx.WriteError(w, r, http.StatusServiceUnavailable, "database_unavailable", "the service is temporarily unavailable")
-	case status == http.StatusNoContent:
-		w.WriteHeader(status)
 	default:
 		httpx.WriteJSON(w, status, v)
 	}

@@ -34,16 +34,6 @@ func deleteVerdict(ctx context.Context, q database.DBTX, findingID, userID strin
 	return err
 }
 
-// feedbackSummary counts the finding's verdicts and returns userID's own.
-func feedbackSummary(ctx context.Context, q database.DBTX, findingID, userID string) (useful, incorrect int, mine *string, err error) {
-	err = q.QueryRow(ctx, `
-		SELECT count(*) FILTER (WHERE verdict = 'useful')::int,
-		       count(*) FILTER (WHERE verdict = 'incorrect')::int,
-		       max(verdict) FILTER (WHERE user_id = $2)
-		FROM finding_feedback WHERE finding_id = $1`, findingID, userID).Scan(&useful, &incorrect, &mine)
-	return useful, incorrect, mine, err
-}
-
 // markDone records the check as done by userID unless it already is; the
 // first person to mark it keeps the credit.
 func markDone(ctx context.Context, q database.DBTX, findingID, userID string, at time.Time) error {

@@ -148,11 +148,16 @@ func TestFeedbackSetChangeClear(t *testing.T) {
 		t.Fatalf("read model: %+v", got)
 	}
 
+	// Another engineer votes; clearing returns everyone's current counts.
+	f.put(path, f.member("Ama"), map[string]string{"verdict": "useful"})
 	w := testutil.SendJSON(t, f.h, http.MethodDelete, path, f.s.AdminToken, nil)
-	if w.Code != http.StatusNoContent {
+	if w.Code != http.StatusOK {
 		t.Fatalf("clear: %d %s", w.Code, w.Body)
 	}
-	if got := f.latest(f.s.AdminToken)[0].Feedback; got.Useful+got.Incorrect != 0 || got.Mine != nil {
+	if fb := testutil.Decode[feedbackBody](t, w); fb.Useful != 1 || fb.Incorrect != 0 || fb.Mine != nil {
+		t.Fatalf("clear response: %+v", fb)
+	}
+	if got := f.latest(f.s.AdminToken)[0].Feedback; got.Useful != 1 || got.Incorrect != 0 || got.Mine != nil {
 		t.Fatalf("after clear: %+v", got)
 	}
 
