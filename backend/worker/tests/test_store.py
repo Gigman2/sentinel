@@ -181,3 +181,48 @@ def test_lease_skips_locked_job(dsn, conn, seeded):
         conn.execute("SET lock_timeout = '2s'")  # without SKIP LOCKED this would wait, then error
         job = store.lease_job(conn)
         assert job is not None and job.incident_id == second
+
+
+def test_started_and_finished_at(conn, seeded):
+    """started_at is the first lease and survives a re-lease and a requeue;
+    finished_at is set when the job succeeds or fails, never before."""
+    make_simple_incident(conn, seeded)
+    first = store.lease_job(conn)
+    started = job_row(conn, first.id)["started_at"]
+    assert started is not None and job_row(conn, first.id)["finished_at"] is None
+
+    conn.execute("UPDATE analysis_jobs SET started_at = started_at - interval '1 hour' WHERE id = %s", (first.id,))
+    started = job_row(conn, first.id)["started_at"]
+    expire_lease(conn, first.id)
+    second = store.lease_job(conn)
+    assert second.id == first.id and job_row(conn, first.id)["started_at"] == started
+
+    store.fail_job(conn, second, RuntimeError("boom"))  # requeued
+    conn.execute("UPDATE analysis_jobs SET next_attempt_at = now() WHERE id = %s", (first.id,))
+    third = store.lease_job(conn)
+    row = job_row(conn, third.id)
+    assert row["started_at"] == started and row["finished_at"] is None
+
+    store.write_revision(conn, third, [Finding("unknown", "no_error_evidence", "None.", ())])
+    row = job_row(conn, third.id)
+    assert row["status"] == "succeeded" and row["finished_at"] is not None and row["finished_at"] >= started
+
+
+def test_failed_job_records_finished_at(conn, seeded):
+    make_simple_incident(conn, seeded)
+    job = store.lease_job(conn)
+    conn.execute("UPDATE analysis_jobs SET attempts = max_attempts WHERE id = %s", (job.id,))
+    store.fail_job(conn, store.Job(job.id, job.incident_id, job.max_attempts, job.max_attempts, job.lease_token),
+                   RuntimeError("boom"))
+    row = job_row(conn, job.id)
+    assert row["status"] == "failed" and row["finished_at"] is not None
+
+
+def test_expired_last_attempt_records_finished_at(conn, seeded):
+    make_simple_incident(conn, seeded)
+    job = store.lease_job(conn)
+    conn.execute("UPDATE analysis_jobs SET attempts = max_attempts WHERE id = %s", (job.id,))
+    expire_lease(conn, job.id)
+    assert store.lease_job(conn) is None
+    row = job_row(conn, job.id)
+    assert row["status"] == "failed" and row["finished_at"] is not None

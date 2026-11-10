@@ -86,7 +86,41 @@ export interface Revision {
 export interface Analysis {
   status: AnalysisStatus;
   last_error: string | null;
+  /** The newest job's first lease; null before it starts (or for jobs from
+   * before start times were recorded). */
+  started_at: string | null;
+  /** When the newest job succeeded or failed. */
+  finished_at: string | null;
+  revision_count: number;
   latest_revision: Revision | null;
+}
+
+export type AnalysisReason = "incident_created" | "repeat_trigger" | "late_event" | "manual_retry";
+
+export interface RuleRef {
+  kind: FindingKind;
+  rule_id: string;
+}
+
+/** One revision in an incident's history (GET /v1/incidents/{id}/revisions). */
+export interface RevisionHistoryItem {
+  revision_number: number;
+  created_at: string;
+  reason: AnalysisReason;
+  finding_count: number;
+  /** null for revision 1, which has nothing to compare against. */
+  changes: { added: RuleRef[]; removed: RuleRef[] } | null;
+  new_evidence: { event_id: string; type: EventType; received_at: string }[];
+}
+
+export type EvidenceSourceStatus = "retrieved" | "no_matching_data" | "not_connected";
+
+export interface EvidenceSource {
+  integration_id: string | null;
+  name: string;
+  capability: "incident_input" | "change_source" | null;
+  event_count: number;
+  status: EvidenceSourceStatus;
 }
 
 export interface Incident {
@@ -108,6 +142,7 @@ export interface Incident {
   trigger_event_id: string;
   signal_count: number;
   analysis: Analysis;
+  evidence_sources: EvidenceSource[];
 }
 
 export interface TimelineItem {

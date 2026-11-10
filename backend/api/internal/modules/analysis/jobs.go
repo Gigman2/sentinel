@@ -97,9 +97,15 @@ func (s Service) Reanalyze(ctx context.Context, orgID, incidentID string) (strin
 
 // View is an incident's analysis state as the engineer sees it.
 type View struct {
-	Status         string    `json:"status"`
-	LastError      *string   `json:"last_error"`
-	LatestRevision *Revision `json:"latest_revision"`
+	Status    string  `json:"status"`
+	LastError *string `json:"last_error"`
+	// StartedAt and FinishedAt are the newest job's first lease and terminal
+	// transition; null when it has not started or finished, or when it
+	// predates their recording.
+	StartedAt      *time.Time `json:"started_at"`
+	FinishedAt     *time.Time `json:"finished_at"`
+	RevisionCount  int        `json:"revision_count"`
+	LatestRevision *Revision  `json:"latest_revision"`
 }
 
 // Revision is one immutable analysis result.
@@ -125,14 +131,18 @@ type Finding struct {
 // REPEATABLE READ transaction).
 func Read(ctx context.Context, q database.DBTX, incidentID string) (View, error) {
 	v := View{Status: StatusNone}
-	status, lastError, err := newestJob(ctx, q, incidentID)
+	job, err := newestJob(ctx, q, incidentID)
 	switch {
 	case err == nil:
-		v.Status, v.LastError = status, lastError
+		v.Status, v.LastError = job.Status, job.LastError
+		v.StartedAt, v.FinishedAt = utcPtr(job.StartedAt), utcPtr(job.FinishedAt)
 	case !errors.Is(err, pgx.ErrNoRows):
 		return View{}, fmt.Errorf("read analysis job: %w", err)
 	}
 
+	if v.RevisionCount, err = revisionCount(ctx, q, incidentID); err != nil {
+		return View{}, fmt.Errorf("count analysis revisions: %w", err)
+	}
 	rev, err := latestRevision(ctx, q, incidentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, nil
@@ -140,13 +150,30 @@ func Read(ctx context.Context, q database.DBTX, incidentID string) (View, error)
 	if err != nil {
 		return View{}, fmt.Errorf("read analysis revision: %w", err)
 	}
+	full, err := withFindings(ctx, q, rev)
+	if err != nil {
+		return View{}, err
+	}
+	v.LatestRevision = &full
+	return v, nil
+}
+
+// withFindings loads a revision's findings.
+func withFindings(ctx context.Context, q database.DBTX, rev revisionRow) (Revision, error) {
 	findings, err := revisionFindings(ctx, q, rev.ID)
 	if err != nil {
-		return View{}, fmt.Errorf("read findings: %w", err)
+		return Revision{}, fmt.Errorf("read findings: %w", err)
 	}
 	if findings == nil {
 		findings = []Finding{}
 	}
-	v.LatestRevision = &Revision{ID: rev.ID, RevisionNumber: rev.RevisionNumber, CreatedAt: rev.CreatedAt.UTC(), Findings: findings}
-	return v, nil
+	return Revision{ID: rev.ID, RevisionNumber: rev.RevisionNumber, CreatedAt: rev.CreatedAt.UTC(), Findings: findings}, nil
+}
+
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }

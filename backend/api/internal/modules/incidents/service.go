@@ -84,6 +84,8 @@ type Incident struct {
 	TriggerEventID string        `json:"trigger_event_id"`
 	SignalCount    int           `json:"signal_count"`
 	Analysis       analysis.View `json:"analysis"`
+	// EvidenceSources is the project's integrations, then Logs and Metrics.
+	EvidenceSources []EvidenceSource `json:"evidence_sources"`
 }
 
 // Resolution sources.
@@ -134,24 +136,29 @@ func (s Service) Get(ctx context.Context, orgID, incidentID string) (Incident, e
 	if err != nil {
 		return Incident{}, err
 	}
+	sources, err := evidenceSources(ctx, tx, r.ProjectID, incidentID)
+	if err != nil {
+		return Incident{}, err
+	}
 
 	start, end := EvidenceWindow(r.FirstSeenAt, r.LastSeenAt)
 	inc := Incident{
-		ID:             r.ID,
-		Number:         r.Number,
-		ProjectID:      r.ProjectID,
-		Component:      Component{ID: r.ComponentID, Slug: r.ComponentSlug, DisplayName: r.ComponentName},
-		Environment:    r.Environment,
-		Fingerprint:    r.Fingerprint,
-		Status:         r.Status,
-		Severity:       r.Severity,
-		Title:          r.Title,
-		FirstSeenAt:    r.FirstSeenAt.UTC(),
-		LastSeenAt:     r.LastSeenAt.UTC(),
-		EvidenceWindow: Window{Start: start, End: end},
-		TriggerEventID: r.TriggerEventID,
-		SignalCount:    r.SignalCount,
-		Analysis:       view,
+		ID:              r.ID,
+		Number:          r.Number,
+		ProjectID:       r.ProjectID,
+		Component:       Component{ID: r.ComponentID, Slug: r.ComponentSlug, DisplayName: r.ComponentName},
+		Environment:     r.Environment,
+		Fingerprint:     r.Fingerprint,
+		Status:          r.Status,
+		Severity:        r.Severity,
+		Title:           r.Title,
+		FirstSeenAt:     r.FirstSeenAt.UTC(),
+		LastSeenAt:      r.LastSeenAt.UTC(),
+		EvidenceWindow:  Window{Start: start, End: end},
+		TriggerEventID:  r.TriggerEventID,
+		SignalCount:     r.SignalCount,
+		Analysis:        view,
+		EvidenceSources: sources,
 	}
 	if r.ResolvedByID != nil && r.ResolvedByName != nil {
 		inc.ResolvedBy = &User{ID: *r.ResolvedByID, DisplayName: *r.ResolvedByName}

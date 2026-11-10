@@ -1007,6 +1007,134 @@ a:focus-visible,
 .prop > span:last-child {
   min-width: 0;
 }
+.side-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+.side-title-row .side-title {
+  padding-bottom: 0;
+}
+.side-title-row > * {
+  white-space: nowrap;
+}
+.side-title-row > :last-child {
+  margin-left: auto;
+}
+
+/* Revision history (Analysis section). */
+.history {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.history-item:last-child {
+  border-bottom: 0;
+}
+.history-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.history-n {
+  font-weight: 600;
+}
+.history-view {
+  margin-left: auto;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11.5px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+}
+.history-current {
+  background: var(--surface2);
+  color: var(--fg2);
+  cursor: default;
+}
+.history-reason {
+  color: var(--fg2);
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+.history-changes {
+  font-size: 11px;
+  color: var(--fg3);
+  text-wrap: pretty;
+}
+.history-note {
+  padding: 6px 0;
+  font-size: 12.5px;
+}
+
+/* Viewing a superseded revision. */
+.old-revision {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface2);
+  max-width: 780px;
+}
+.old-revision > span {
+  flex: 1;
+  min-width: 200px;
+}
+
+/* Evidence sources. */
+.coverage {
+  display: flex;
+  gap: 3px;
+}
+.coverage > span {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+}
+.sources {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.source {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 8px;
+  align-items: center;
+  min-height: 30px;
+  font-size: 12.5px;
+}
+.source-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .trigger-link {
   display: flex;
   flex-direction: column;
