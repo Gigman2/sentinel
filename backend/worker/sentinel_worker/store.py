@@ -10,6 +10,7 @@ never takes the per-component advisory lock; it does not change which events
 are linked.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import psycopg
@@ -90,10 +91,11 @@ def load_context(conn: psycopg.Connection, incident_id: str) -> IncidentContext:
                                    link_reason=r[5], details=r[6] or {}) for r in rows))
 
 
-def write_revision(conn: psycopg.Connection, job: Job, findings: list[Finding]) -> str | None:
+def write_revision(conn: psycopg.Connection, job: Job, findings: list[Finding], seen: Sequence[str]) -> str | None:
     """Mark the job succeeded and store its findings as the incident's next
-    revision, in one transaction. Returns the revision ID, or None if the
-    job's lease was lost (nothing is written)."""
+    revision, with the IDs of the events the analysis read (`seen`), in one
+    transaction. Returns the revision ID, or None if the job's lease was lost
+    (nothing is written)."""
     try:
         with conn.transaction():
             # Serializes revision numbering per incident.
@@ -118,6 +120,11 @@ def write_revision(conn: psycopg.Connection, job: Job, findings: list[Finding]) 
                 return conn.execute("SELECT id::text FROM analysis_revisions WHERE job_id = %s",
                                     (job.id,)).fetchone()[0]
             revision_id = row[0]
+            # One statement for all of them: this runs under the incident lock.
+            conn.execute(
+                """INSERT INTO revision_events (revision_id, event_id)
+                   SELECT %s, e FROM unnest(%s::uuid[]) AS e""",
+                (revision_id, list(dict.fromkeys(seen))))
             for ordinal, f in enumerate(findings):
                 finding_id = conn.execute(
                     """INSERT INTO findings (revision_id, ordinal, kind, rule_id, text, limitations)

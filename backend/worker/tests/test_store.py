@@ -67,12 +67,12 @@ def test_stale_worker_cannot_write(conn, seeded):
     expire_lease(conn, stale.id)
     fresh = store.lease_job(conn)
 
-    assert store.write_revision(conn, stale, FINDINGS) is None
+    assert store.write_revision(conn, stale, FINDINGS, ()) is None
     assert conn.execute("SELECT count(*) FROM analysis_revisions").fetchone()[0] == 0
     store.fail_job(conn, stale, RuntimeError("late"))  # also a no-op
     assert job_row(conn, stale.id)["status"] == "running"
 
-    assert store.write_revision(conn, fresh, FINDINGS) is not None
+    assert store.write_revision(conn, fresh, FINDINGS, ()) is not None
     assert conn.execute("SELECT count(*) FROM analysis_revisions WHERE incident_id = %s", (incident,)).fetchone()[0] == 1
 
 
@@ -82,9 +82,9 @@ def test_write_revision_idempotent_per_job(conn, seeded):
     job = store.lease_job(conn)
     findings = [Finding("observation", "trigger_alert", "An alert fired.", (alert,)), *FINDINGS[1:]]
 
-    revision = store.write_revision(conn, job, findings)
+    revision = store.write_revision(conn, job, findings, [alert, alert])
     assert revision is not None
-    assert store.write_revision(conn, job, findings) is None
+    assert store.write_revision(conn, job, findings, [alert, alert]) is None
 
     row = job_row(conn, job.id)
     assert row["status"] == "succeeded" and row["lease_token"] is None and row["lease_expires_at"] is None
@@ -93,13 +93,15 @@ def test_write_revision_idempotent_per_job(conn, seeded):
                         (revision,)).fetchall()
     assert rows == [(0, "observation", "trigger_alert"), (1, "next_check", "inspect_telemetry")]
     assert conn.execute("SELECT count(*) FROM finding_evidence").fetchone()[0] == 1
+    # The events the analysis read, once each; the replay wrote nothing more.
+    assert conn.execute("SELECT revision_id::text, event_id::text FROM revision_events").fetchall() == [(revision, alert)]
 
 
 def test_second_revision_increments(conn, seeded):
     incident = make_simple_incident(conn, seeded)
-    store.write_revision(conn, store.lease_job(conn), FINDINGS)
+    store.write_revision(conn, store.lease_job(conn), FINDINGS, ())
     conn.execute("INSERT INTO analysis_jobs (incident_id, reason) VALUES (%s, 'late_event')", (incident,))
-    store.write_revision(conn, store.lease_job(conn), FINDINGS)
+    store.write_revision(conn, store.lease_job(conn), FINDINGS, ())
 
     numbers = [r[0] for r in conn.execute(
         "SELECT revision_number FROM analysis_revisions WHERE incident_id = %s ORDER BY revision_number", (incident,))]
@@ -203,7 +205,7 @@ def test_started_and_finished_at(conn, seeded):
     row = job_row(conn, third.id)
     assert row["started_at"] == started and row["finished_at"] is None
 
-    store.write_revision(conn, third, [Finding("unknown", "no_error_evidence", "None.", ())])
+    store.write_revision(conn, third, [Finding("unknown", "no_error_evidence", "None.", ())], ())
     row = job_row(conn, third.id)
     assert row["status"] == "succeeded" and row["finished_at"] is not None and row["finished_at"] >= started
 

@@ -30,6 +30,8 @@ def test_process_reference_incident(conn, seeded):
     assert [(k, r, t, lim, sorted(ev)) for k, r, t, lim, ev in stored] == [
         (f.kind, f.rule_id, f.text, f.limitations, sorted(f.evidence_ids)) for f in expected]
     assert any(r == "deployment_near_onset" for _, r, *_ in stored)
+    seen = {r[0] for r in conn.execute("SELECT event_id::text FROM revision_events WHERE revision_id = %s", (revision[0],))}
+    assert seen == set(events.values())
     assert main.process_one(conn) is False
 
 

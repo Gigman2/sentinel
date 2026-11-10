@@ -78,4 +78,49 @@ func TestCoverage(t *testing.T) {
 	if o[1].EventCount != 1 || o[0].EventCount != 1 {
 		t.Fatalf("other incident: %+v", o)
 	}
+
+	// Disabled with no linked events: not connected, not "no matching data".
+	// Disabled with linked events: those events still count.
+	f.exec(`UPDATE integrations SET enabled = false`)
+	inc2 := f.openOther()
+	d := f.sources(inc2)
+	if d[0].Name != "deploys" || d[0].Status != "not_connected" || d[0].EventCount != 0 || d[0].IntegrationID == nil {
+		t.Errorf("disabled deploys: %+v", d[0])
+	}
+	if s := f.sources(inc); s[0].Status != "retrieved" || s[1].Status != "retrieved" {
+		t.Errorf("disabled with events: %+v", s[:2])
+	}
+}
+
+// openOther inserts an open incident on checkout-api directly (ingest is
+// refused once integrations are disabled) and links its trigger.
+func (f fixture) openOther() string {
+	f.t.Helper()
+	var id string
+	err := f.pool.QueryRow(context.Background(), `
+		WITH ev AS (
+		    INSERT INTO operational_events (organization_id, project_id, integration_id, component_id, environment,
+		                                    type, source_event_id, occurred_at, received_at, disposition)
+		    VALUES ($1, $2, $3, $4, 'production', 'alert.triggered', 'manual-1', now(), now(), 'incident_created')
+		    RETURNING id),
+		inc AS (
+		    INSERT INTO incidents (organization_id, project_id, component_id, environment, fingerprint, status,
+		                           severity, title, first_seen_at, last_seen_at, trigger_event_id, number)
+		    SELECT $1, $2, $4, 'production', 'manual', 'open', 'error', 'manual', now(), now(), ev.id, 99 FROM ev
+		    RETURNING id, trigger_event_id)
+		INSERT INTO incident_events (incident_id, event_id, reason, linked_at)
+		SELECT id, trigger_event_id, 'trigger', now() FROM inc
+		RETURNING incident_id::text`,
+		f.s.OrgID, f.s.ProjectID, f.s.MonitorIntegrationID, f.s.Components["checkout-api"]).Scan(&id)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return id
+}
+
+func (f fixture) exec(sql string, args ...any) {
+	f.t.Helper()
+	if _, err := f.pool.Exec(context.Background(), sql, args...); err != nil {
+		f.t.Fatalf("exec %q: %v", sql, err)
+	}
 }

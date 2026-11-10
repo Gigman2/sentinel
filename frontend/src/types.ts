@@ -110,7 +110,9 @@ export interface RevisionHistoryItem {
   finding_count: number;
   /** null for revision 1, which has nothing to compare against. */
   changes: { added: RuleRef[]; removed: RuleRef[] } | null;
-  new_evidence: { event_id: string; type: EventType; received_at: string }[];
+  /** Events this revision read that the previous one did not; null when
+   * unknown (written before revisions recorded what they read). */
+  new_evidence: { event_id: string; type: EventType; received_at: string }[] | null;
 }
 
 export type EvidenceSourceStatus = "retrieved" | "no_matching_data" | "not_connected";

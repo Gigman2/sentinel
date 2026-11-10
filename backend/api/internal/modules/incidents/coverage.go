@@ -27,7 +27,7 @@ type EvidenceSource struct {
 
 // evidenceSources lists every integration in the incident's project with the
 // number of its events linked to the incident, then Logs and Metrics as not
-// connected.
+// connected. A disabled integration with no linked events is not connected.
 func evidenceSources(ctx context.Context, q database.DBTX, projectID, incidentID string) ([]EvidenceSource, error) {
 	rows, err := integrationEventCounts(ctx, q, projectID, incidentID)
 	if err != nil {
@@ -35,9 +35,14 @@ func evidenceSources(ctx context.Context, q database.DBTX, projectID, incidentID
 	}
 	out := make([]EvidenceSource, 0, len(rows)+2)
 	for _, r := range rows {
-		status := SourceNoMatchingData
-		if r.EventCount > 0 {
-			status = SourceRetrieved
+		var status string
+		switch {
+		case r.EventCount > 0:
+			status = SourceRetrieved // even if disabled since: its events are evidence
+		case !r.Enabled:
+			status = SourceNotConnected // it cannot deliver, so "no matching data" would mislead
+		default:
+			status = SourceNoMatchingData
 		}
 		id, capability := r.ID, r.Capability
 		out = append(out, EvidenceSource{IntegrationID: &id, Name: r.Name, Capability: &capability, EventCount: r.EventCount, Status: status})

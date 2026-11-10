@@ -57,7 +57,10 @@ export function Properties({
   const signals = events.filter((e) => e.link_reason === "trigger" || e.link_reason === "repeat_trigger");
   const a = incident.analysis;
   const [showHistory, setShowHistory] = useState(false);
-  const running = (a.status === "pending" || a.status === "running") && !!a.started_at && !a.finished_at;
+  // Only a running job is working; a pending one with a start time failed an
+  // attempt and is waiting out its retry delay.
+  const running = a.status === "running" && !!a.started_at && !a.finished_at;
+  const retrying = a.status === "pending" && !!a.started_at && !a.finished_at;
   const now = useNow(running);
   // Jobs from before finish times were recorded: the revision time stands in.
   const finished = a.finished_at ?? (a.status === "succeeded" ? (a.latest_revision?.created_at ?? null) : null);
@@ -145,6 +148,16 @@ export function Properties({
         {finished && a.status !== "pending" && a.status !== "running" && (
           <Prop k={a.status === "failed" ? "Failed" : "Completed"}>
             <Time iso={finished} />
+          </Prop>
+        )}
+        {retrying && (
+          <Prop k="Retry">
+            <span className="muted-2">Waiting to retry</span>
+          </Prop>
+        )}
+        {a.latest_revision && a.status !== "succeeded" && (
+          <Prop k="Revised">
+            <Time iso={a.latest_revision.created_at} />
           </Prop>
         )}
         {a.started_at && (running || a.finished_at) && (

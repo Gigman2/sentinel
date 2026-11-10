@@ -102,17 +102,13 @@ type historyRow struct {
 	RevisionNumber int
 	CreatedAt      time.Time
 	Reason         string
-	// Cutoff is when the revision's job first started; evidence linked
-	// before it is attributed to this revision or an earlier one. Jobs from
-	// before started_at was recorded fall back to the revision's created_at.
-	Cutoff time.Time
 }
 
 // revisionHistory returns the incident's revisions, oldest first, with the
-// reason and start of the job that wrote each.
+// reason of the job that wrote each.
 func revisionHistory(ctx context.Context, q database.DBTX, incidentID string) ([]historyRow, error) {
 	rows, err := q.Query(ctx, `
-		SELECT r.id::text, r.revision_number, r.created_at, j.reason, COALESCE(j.started_at, r.created_at)
+		SELECT r.id::text, r.revision_number, r.created_at, j.reason
 		FROM analysis_revisions r
 		JOIN analysis_jobs j ON j.id = r.job_id
 		WHERE r.incident_id = $1
@@ -122,7 +118,7 @@ func revisionHistory(ctx context.Context, q database.DBTX, incidentID string) ([
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (historyRow, error) {
 		var h historyRow
-		err := row.Scan(&h.ID, &h.RevisionNumber, &h.CreatedAt, &h.Reason, &h.Cutoff)
+		err := row.Scan(&h.ID, &h.RevisionNumber, &h.CreatedAt, &h.Reason)
 		return h, err
 	})
 }
@@ -152,29 +148,30 @@ func incidentFindingKeys(ctx context.Context, q database.DBTX, incidentID string
 	})
 }
 
-type linkRow struct {
+type seenRow struct {
+	RevisionID string
 	EventID    string
 	Type       string
 	ReceivedAt time.Time
-	LinkedAt   time.Time
 }
 
-// incidentLinks returns the incident's linked events in the order they were
-// linked.
-func incidentLinks(ctx context.Context, q database.DBTX, incidentID string) ([]linkRow, error) {
+// revisionSeenEvents returns the events each of the incident's revisions
+// read, by receipt time.
+func revisionSeenEvents(ctx context.Context, q database.DBTX, incidentID string) ([]seenRow, error) {
 	rows, err := q.Query(ctx, `
-		SELECT e.id::text, e.type, e.received_at, l.linked_at
-		FROM incident_events l
-		JOIN operational_events e ON e.id = l.event_id
-		WHERE l.incident_id = $1
-		ORDER BY l.linked_at, e.received_at, e.id`, incidentID)
+		SELECT re.revision_id::text, e.id::text, e.type, e.received_at
+		FROM revision_events re
+		JOIN analysis_revisions r ON r.id = re.revision_id
+		JOIN operational_events e ON e.id = re.event_id
+		WHERE r.incident_id = $1
+		ORDER BY e.received_at, e.id`, incidentID)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (linkRow, error) {
-		var l linkRow
-		err := row.Scan(&l.EventID, &l.Type, &l.ReceivedAt, &l.LinkedAt)
-		return l, err
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (seenRow, error) {
+		var r seenRow
+		err := row.Scan(&r.RevisionID, &r.EventID, &r.Type, &r.ReceivedAt)
+		return r, err
 	})
 }
 

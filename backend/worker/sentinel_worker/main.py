@@ -36,8 +36,9 @@ def process_one(conn: psycopg.Connection, analyze_fn: AnalyzeFn = rules.analyze)
         return False
     fields = {"job_id": job.id, "incident_id": job.incident_id, "attempts": job.attempts}
     try:
-        findings = analyze_fn(store.load_context(conn, job.incident_id))
-        revision = store.write_revision(conn, job, findings)
+        context = store.load_context(conn, job.incident_id)
+        findings = analyze_fn(context)
+        revision = store.write_revision(conn, job, findings, [e.id for e in context.events])
     except psycopg.OperationalError:
         raise
     except Exception as error:  # noqa: BLE001 — any rule or data error is recorded on the job

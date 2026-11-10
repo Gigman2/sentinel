@@ -17,9 +17,11 @@ export function reasonText(item: RevisionHistoryItem): string {
     case "manual_retry":
       return "Retried by an engineer.";
     case "late_event": {
-      const first = item.new_evidence[0];
+      // Name the late event, not a repeat alert that arrived alongside it.
+      const late = (item.new_evidence ?? []).filter((e) => !e.type.startsWith("alert."));
+      const first = late[0];
       if (!first) return "Late evidence.";
-      const more = item.new_evidence.length - 1;
+      const more = late.length - 1;
       return `Late evidence: ${EVENT_NOUN[first.type]} received at ${utcTime(first.received_at, { seconds: true }).text}${more > 0 ? ` and ${more} more` : ""}.`;
     }
   }

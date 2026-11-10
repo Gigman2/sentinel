@@ -353,6 +353,7 @@ type integrationCount struct {
 	ID         string
 	Name       string
 	Capability string
+	Enabled    bool
 	EventCount int
 }
 
@@ -360,7 +361,7 @@ type integrationCount struct {
 // with how many of its events are linked to the incident.
 func integrationEventCounts(ctx context.Context, q database.DBTX, projectID, incidentID string) ([]integrationCount, error) {
 	rows, err := q.Query(ctx, `
-		SELECT g.id::text, g.name, g.capability,
+		SELECT g.id::text, g.name, g.capability, g.enabled,
 		       (SELECT count(*)::int FROM incident_events l
 		        JOIN operational_events e ON e.id = l.event_id
 		        WHERE l.incident_id = $2 AND e.integration_id = g.id)
@@ -372,7 +373,7 @@ func integrationEventCounts(ctx context.Context, q database.DBTX, projectID, inc
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (integrationCount, error) {
 		var c integrationCount
-		err := row.Scan(&c.ID, &c.Name, &c.Capability, &c.EventCount)
+		err := row.Scan(&c.ID, &c.Name, &c.Capability, &c.Enabled, &c.EventCount)
 		return c, err
 	})
 }
