@@ -21,11 +21,24 @@ type newIncident struct {
 // insertOpenIncidentIfAbsent opens an incident unless one is already open
 // for the same grouping key. inserted=false means one is open (or a
 // concurrent transaction just opened it).
+//
+// The incident takes the project's next number. The counter row is only
+// updated (and so row-locked) when no incident is open for the key, so an
+// attach never consumes a number. The caller holds the component's advisory
+// lock, which is the only path that opens incidents for this key, so the
+// open check cannot go stale before the insert.
 func insertOpenIncidentIfAbsent(ctx context.Context, q database.DBTX, in newIncident) (id string, inserted bool, err error) {
 	err = q.QueryRow(ctx, `
+		WITH counter AS (
+		    UPDATE projects SET next_incident_number = next_incident_number + 1
+		    WHERE id = $2 AND NOT EXISTS (
+		        SELECT 1 FROM incidents
+		        WHERE organization_id = $1 AND project_id = $2 AND environment = $4
+		          AND component_id = $3 AND fingerprint = $5 AND status = 'open')
+		    RETURNING next_incident_number - 1 AS number)
 		INSERT INTO incidents (organization_id, project_id, component_id, environment, fingerprint,
-		                       status, severity, title, first_seen_at, last_seen_at, trigger_event_id, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11)
+		                       status, severity, title, first_seen_at, last_seen_at, trigger_event_id, updated_at, number)
+		SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, counter.number FROM counter
 		ON CONFLICT (organization_id, project_id, environment, component_id, fingerprint)
 		    WHERE status = 'open' DO NOTHING
 		RETURNING id::text`,
@@ -69,12 +82,15 @@ func updateIncidentSeen(ctx context.Context, q database.DBTX, id string, lastSee
 	return err
 }
 
-func markIncidentResolved(ctx context.Context, q database.DBTX, id string, resolvedAt time.Time, source string, note *string, updatedAt time.Time) error {
+// markIncidentResolved resolves an incident. resolvedBy is the user who
+// resolved it by hand, or nil when an alert resolved it.
+func markIncidentResolved(ctx context.Context, q database.DBTX, id string, resolvedAt time.Time, source string, note, resolvedBy *string, updatedAt time.Time) error {
 	_, err := q.Exec(ctx, `
 		UPDATE incidents
-		SET status = $2, resolved_at = $3, resolution_source = $4, resolution_note = $5, updated_at = $6
+		SET status = $2, resolved_at = $3, resolution_source = $4, resolution_note = $5, updated_at = $6,
+		    resolved_by_user_id = $7
 		WHERE id = $1`,
-		id, domain.IncidentResolved, resolvedAt, source, note, updatedAt)
+		id, domain.IncidentResolved, resolvedAt, source, note, updatedAt, resolvedBy)
 	return err
 }
 
@@ -158,6 +174,9 @@ type incidentRow struct {
 	FirstSeenAt, LastSeenAt                                                          time.Time
 	ResolvedAt                                                                       *time.Time
 	ResolutionSource, ResolutionNote                                                 *string
+	ResolvedByID, ResolvedByName                                                     *string
+	Number                                                                           int64
+	SignalCount                                                                      int
 }
 
 // incidentInOrg returns the incident only if it belongs to orgID.
@@ -167,13 +186,16 @@ func incidentInOrg(ctx context.Context, q database.DBTX, orgID, incidentID strin
 	err := q.QueryRow(ctx, `
 		SELECT i.id::text, i.project_id::text, i.environment, i.fingerprint, i.status, i.severity, i.title,
 		       i.trigger_event_id::text, c.id::text, c.slug, c.display_name,
-		       i.first_seen_at, i.last_seen_at, i.resolved_at, i.resolution_source, i.resolution_note
+		       i.first_seen_at, i.last_seen_at, i.resolved_at, i.resolution_source, i.resolution_note,
+		       u.id::text, u.display_name, i.number, `+signalCountSQL+`
 		FROM incidents i
 		JOIN components c ON c.id = i.component_id
+		LEFT JOIN users u ON u.id = i.resolved_by_user_id
 		WHERE i.id = $1 AND i.organization_id = $2`, incidentID, orgID).Scan(
 		&r.ID, &r.ProjectID, &r.Environment, &r.Fingerprint, &r.Status, &r.Severity, &r.Title,
 		&r.TriggerEventID, &r.ComponentID, &r.ComponentSlug, &r.ComponentName,
-		&r.FirstSeenAt, &r.LastSeenAt, &r.ResolvedAt, &r.ResolutionSource, &r.ResolutionNote)
+		&r.FirstSeenAt, &r.LastSeenAt, &r.ResolvedAt, &r.ResolutionSource, &r.ResolutionNote,
+		&r.ResolvedByID, &r.ResolvedByName, &r.Number, &r.SignalCount)
 	return r, err
 }
 
@@ -183,17 +205,32 @@ type cursor struct {
 	ID string
 }
 
-// listRow is one incident in a project listing.
+// signalCountSQL counts the alerts grouped into incident i (its trigger and
+// repeat triggers).
+const signalCountSQL = `(SELECT count(*)::int FROM incident_events l
+		WHERE l.incident_id = i.id AND l.reason IN ('trigger', 'repeat_trigger'))`
+
+// listFilter narrows a project listing. Empty strings and a nil Since match everything.
+type listFilter struct {
+	Status, Severity, Component, Query string
+	Since                              *time.Time
+}
+
+// listRow is one incident in a project listing. AnalysisStatus is the
+// newest job's status, or nil when the incident has never had a job.
 type listRow struct {
 	ID, Status, Severity, Title, Environment string
 	ComponentSlug, ComponentName             string
 	FirstSeenAt, LastSeenAt                  time.Time
+	Number                                   int64
+	AnalysisStatus, ResolutionNote           *string
+	SignalCount                              int
 }
 
-// listIncidents returns up to limit incidents in a project, newest
-// last_seen_at first (ties by id descending), after the cursor if given.
-// An empty status matches every status.
-func listIncidents(ctx context.Context, q database.DBTX, orgID, projectID, status string, after *cursor, limit int) ([]listRow, error) {
+// listIncidents returns up to limit incidents in a project that match f,
+// newest last_seen_at first (ties by id descending), after the cursor if
+// given. Query is a case-insensitive substring of the title.
+func listIncidents(ctx context.Context, q database.DBTX, orgID, projectID string, f listFilter, after *cursor, limit int) ([]listRow, error) {
 	var afterAt *time.Time
 	var afterID *string
 	if after != nil {
@@ -201,21 +238,77 @@ func listIncidents(ctx context.Context, q database.DBTX, orgID, projectID, statu
 	}
 	rows, err := q.Query(ctx, `
 		SELECT i.id::text, i.status, i.severity, i.title, i.environment, c.slug, c.display_name,
-		       i.first_seen_at, i.last_seen_at
+		       i.first_seen_at, i.last_seen_at, i.number, i.resolution_note,
+		       (SELECT j.status FROM analysis_jobs j WHERE j.incident_id = i.id
+		        ORDER BY j.created_at DESC, j.id DESC LIMIT 1),
+		       `+signalCountSQL+`
 		FROM incidents i
 		JOIN components c ON c.id = i.component_id
 		WHERE i.organization_id = $1 AND i.project_id = $2
 		  AND ($3 = '' OR i.status = $3)
-		  AND ($4::timestamptz IS NULL OR (i.last_seen_at, i.id) < ($4, $5::uuid))
+		  AND ($4 = '' OR i.severity = $4)
+		  AND ($5 = '' OR c.slug = $5)
+		  AND ($6::timestamptz IS NULL OR i.last_seen_at >= $6)
+		  AND ($7 = '' OR strpos(lower(i.title), lower($7)) > 0)
+		  AND ($8::timestamptz IS NULL OR (i.last_seen_at, i.id) < ($8, $9::uuid))
 		ORDER BY i.last_seen_at DESC, i.id DESC
-		LIMIT $6`, orgID, projectID, status, afterAt, afterID, limit)
+		LIMIT $10`, orgID, projectID, f.Status, f.Severity, f.Component, f.Since, f.Query, afterAt, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (listRow, error) {
 		var r listRow
 		err := row.Scan(&r.ID, &r.Status, &r.Severity, &r.Title, &r.Environment, &r.ComponentSlug, &r.ComponentName,
-			&r.FirstSeenAt, &r.LastSeenAt)
+			&r.FirstSeenAt, &r.LastSeenAt, &r.Number, &r.ResolutionNote, &r.AnalysisStatus, &r.SignalCount)
+		return r, err
+	})
+}
+
+// openIncidentCount counts a project's open incidents, ignoring any filter.
+func openIncidentCount(ctx context.Context, q database.DBTX, orgID, projectID string) (int, error) {
+	var n int
+	err := q.QueryRow(ctx, `
+		SELECT count(*) FROM incidents
+		WHERE organization_id = $1 AND project_id = $2 AND status = 'open'`, orgID, projectID).Scan(&n)
+	return n, err
+}
+
+// signalRow is one alert event in a project, with the incident it went to.
+type signalRow struct {
+	EventID, Type, Summary, Environment, Disposition string
+	ComponentSlug, ComponentName                     string
+	OccurredAt, ReceivedAt                           time.Time
+	Severity, SourceURL, IncidentID                  *string
+	IncidentNumber                                   *int64
+}
+
+// projectSignals returns up to limit alert.triggered and alert.resolved
+// events in a project, newest occurred_at first (ties by id descending),
+// after the cursor if given.
+func projectSignals(ctx context.Context, q database.DBTX, orgID, projectID string, after *cursor, limit int) ([]signalRow, error) {
+	var afterAt *time.Time
+	var afterID *string
+	if after != nil {
+		afterAt, afterID = &after.At, &after.ID
+	}
+	rows, err := q.Query(ctx, `
+		SELECT e.id::text, e.type, e.summary, e.environment, e.disposition, c.slug, c.display_name,
+		       e.occurred_at, e.received_at, e.severity, e.source_url, i.id::text, i.number
+		FROM operational_events e
+		JOIN components c ON c.id = e.component_id
+		LEFT JOIN incidents i ON i.id = e.incident_id
+		WHERE e.organization_id = $1 AND e.project_id = $2
+		  AND e.type IN ($3, $4)
+		  AND ($5::timestamptz IS NULL OR (e.occurred_at, e.id) < ($5, $6::uuid))
+		ORDER BY e.occurred_at DESC, e.id DESC
+		LIMIT $7`, orgID, projectID, domain.EventAlertTriggered, domain.EventAlertResolved, afterAt, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (signalRow, error) {
+		var r signalRow
+		err := row.Scan(&r.EventID, &r.Type, &r.Summary, &r.Environment, &r.Disposition, &r.ComponentSlug, &r.ComponentName,
+			&r.OccurredAt, &r.ReceivedAt, &r.Severity, &r.SourceURL, &r.IncidentID, &r.IncidentNumber)
 		return r, err
 	})
 }

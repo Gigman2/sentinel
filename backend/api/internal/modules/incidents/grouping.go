@@ -33,6 +33,11 @@ func keyOf(ev domain.Event) groupingKey {
 // order), and after creating or attaching links the stored evidence inside
 // the incident's window.
 //
+// Opening takes the project's next incident number by updating the
+// project's counter row, so locks are taken in this order: advisory lock →
+// project counter row → incident row → job rows (see linking.go). An attach
+// never touches the counter.
+//
 // Opening relies on the uq_incidents_open_key partial unique index: the
 // insert does nothing if an incident is open, and the open incident is then
 // row-locked. If that incident is resolved between the two statements, the
@@ -109,7 +114,7 @@ func ApplyAlertResolved(ctx context.Context, tx pgx.Tx, ev domain.Event) (incide
 	if err != nil {
 		return "", false, fmt.Errorf("lock open incident: %w", err)
 	}
-	if err := markIncidentResolved(ctx, tx, open.ID, ev.OccurredAt, ResolutionAlert, nil, ev.ReceivedAt); err != nil {
+	if err := markIncidentResolved(ctx, tx, open.ID, ev.OccurredAt, ResolutionAlert, nil, nil, ev.ReceivedAt); err != nil {
 		return "", false, fmt.Errorf("resolve incident: %w", err)
 	}
 	return open.ID, true, record(ctx, tx, ev, open.ID, domain.LinkResolution, domain.DispositionIncidentResolved)

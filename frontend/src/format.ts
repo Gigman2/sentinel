@@ -61,7 +61,7 @@ export function safeHref(url: string | null | undefined): string | null {
   }
 }
 
-/** INC-n once incidents are numbered; until then the UUID's first 8 characters. */
+/** INC-n; the UUID's first 8 characters if the number is missing. */
 export function shortId(id: string, number?: number): string {
   return number ? `INC-${number}` : id.slice(0, 8);
 }

@@ -86,6 +86,7 @@ func New(d Deps) http.Handler {
 
 	inc := incidents.Handlers{Service: incidents.Service{Pool: d.Pool, Now: d.Now}, Log: d.Logger}
 	mux.Handle("GET /v1/projects/{projectId}/incidents", member(inc.List))
+	mux.Handle("GET /v1/projects/{projectId}/signals", member(inc.Signals))
 	mux.Handle("GET /v1/incidents/{incidentId}", member(inc.Get))
 	mux.Handle("GET /v1/incidents/{incidentId}/timeline", member(inc.Timeline))
 	mux.Handle("POST /v1/incidents/{incidentId}/resolve", member(inc.Resolve))

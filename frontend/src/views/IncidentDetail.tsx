@@ -138,7 +138,8 @@ export function IncidentDetail({ id }: { id: string }) {
     );
   }
 
-  const label = shortId(incident.id);
+  const label = shortId(incident.id, incident.number);
+  const resolver = incident.resolved_by?.display_name;
   const rev = incident.analysis.latest_revision;
   const resolved = incident.status === "resolved";
 
@@ -175,12 +176,14 @@ export function IncidentDetail({ id }: { id: string }) {
                 <>
                   <span className="cause-head">
                     Cause · recorded at resolution · <span className="mono">{utcTime(incident.resolved_at).text} UTC</span>
+                    {resolver && <> · Resolved by {resolver}</>}
                   </span>
                   <span className="cause-text">{incident.resolution.note}</span>
                 </>
               ) : (
                 <span className="cause-head">
-                  Resolved by its alert at <span className="mono">{utcTime(incident.resolved_at).text} UTC</span>. No cause was recorded.
+                  {incident.resolution.source === "alert" ? "Resolved by its alert" : `Resolved by ${resolver ?? "hand"}`} at{" "}
+                  <span className="mono">{utcTime(incident.resolved_at).text} UTC</span>. No cause was recorded.
                 </span>
               )}
             </div>

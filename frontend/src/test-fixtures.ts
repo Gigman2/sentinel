@@ -8,6 +8,7 @@ export const INCIDENT_ID = "6f1c2a90-1111-4c4c-8888-000000000001";
 export function referenceIncident(over: Partial<Incident> = {}): Incident {
   return {
     id: INCIDENT_ID,
+    number: 42,
     project_id: "p-1",
     component: { id: "c-1", slug: "payment-service", display_name: "Payment Service" },
     environment: "production",
@@ -20,7 +21,9 @@ export function referenceIncident(over: Partial<Incident> = {}): Incident {
     evidence_window: { start: "2026-11-09T13:39:12Z", end: "2026-11-09T14:24:12Z" },
     resolved_at: null,
     resolution: null,
+    resolved_by: null,
     trigger_event_id: "evt-alert",
+    signal_count: 1,
     analysis: {
       status: "succeeded",
       last_error: null,
@@ -61,6 +64,10 @@ export function listItem(over: Partial<IncidentListItem> = {}): IncidentListItem
     environment: "production",
     first_seen_at: "2026-11-09T14:09:12Z",
     last_seen_at: "2026-11-09T14:09:12Z",
+    number: 42,
+    analysis_status: "succeeded",
+    signal_count: 1,
+    resolution_note: null,
     ...over,
   };
 }

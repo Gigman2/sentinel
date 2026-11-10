@@ -11,8 +11,12 @@ import (
 )
 
 // Lock order, everywhere: per-component advisory lock (lockComponentWindow)
-// → incident row lock (lockOpenIncident, incidentStatusInOrgForUpdate) → job
-// rows. No code path takes them in another order.
+// → project counter row (insertOpenIncidentIfAbsent, only when opening an
+// incident) → incident row lock (lockOpenIncident,
+// incidentStatusInOrgForUpdate) → job rows. A path may skip a lock but never
+// takes them in another order. The counter row serializes numbering across
+// components of one project; it is held only until the opening transaction
+// commits.
 //
 // The advisory lock serializes everything that decides which events fall in
 // which incident windows for one component. Without it, an alert opening an

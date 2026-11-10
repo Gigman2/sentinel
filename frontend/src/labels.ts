@@ -1,5 +1,5 @@
 // Human labels for API values.
-import type { AnalysisStatus, EventType, FindingKind, LinkReason } from "./types";
+import type { AnalysisStatus, Disposition, EventType, FindingKind, LinkReason } from "./types";
 
 export const EVENT_LABEL: Record<EventType, string> = {
   "alert.triggered": "Alert",
@@ -42,4 +42,13 @@ export const ANALYSIS_TONE: Record<AnalysisStatus, string> = {
 export const CAPABILITY_LABEL: Record<string, string> = {
   incident_input: "Incident input",
   change_source: "Change source",
+};
+
+/** What grouping did with an alert, as shown on the Alerts page. */
+export const DISPOSITION_LABEL: Record<Disposition, string> = {
+  incident_created: "Opened",
+  incident_attached: "Grouped into",
+  incident_resolved: "Resolved",
+  unmatched_resolution: "No open incident",
+  evidence: "Evidence",
 };

@@ -25,6 +25,30 @@ function Flame() {
   );
 }
 
+function Magnifier() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M10.5 10.5 14 14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function Bell() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M4 11V7.5a4 4 0 0 1 8 0V11l1.2 1.5H2.8Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <path d="M6.5 14h3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** "⌘K" on Apple platforms, "Ctrl K" elsewhere. */
+function searchShortcut(): string {
+  const platform = typeof navigator !== "undefined" ? navigator.platform || navigator.userAgent : "";
+  return /Mac|iPhone|iPad/.test(platform) ? "⌘K" : "Ctrl K";
+}
+
 function Plug() {
   return (
     <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
@@ -39,6 +63,7 @@ export function Sidebar({
   onProject,
   route,
   openCount,
+  onSearch,
   theme,
   onTheme,
   onSignOut,
@@ -47,7 +72,8 @@ export function Sidebar({
   projectId: string | null;
   onProject: (id: string) => void;
   route: Route;
-  openCount: string | null;
+  openCount: number | null;
+  onSearch?: () => void;
   theme: Theme;
   onTheme: (t: Theme) => void;
   onSignOut: () => void;
@@ -75,6 +101,13 @@ export function Sidebar({
         )}
       </div>
       <nav className="nav-group" aria-label="Main">
+        {onSearch && (
+          <button type="button" className="nav" onClick={onSearch} aria-keyshortcuts="Meta+K Control+K">
+            <Magnifier />
+            <span className="grow">Search</span>
+            <span className="mono nav-kbd">{searchShortcut()}</span>
+          </button>
+        )}
         <span className="lbl nav-heading">Response</span>
         <a href="#/" className={`nav${onIncidents ? " nav-on" : ""}`} aria-current={onIncidents ? "page" : undefined}>
           <Flame />
@@ -84,6 +117,10 @@ export function Sidebar({
               {openCount}
             </span>
           )}
+        </a>
+        <a href="#/alerts" className={`nav${route.name === "alerts" ? " nav-on" : ""}`} aria-current={route.name === "alerts" ? "page" : undefined}>
+          <Bell />
+          <span className="grow">Alerts</span>
         </a>
         <a href="#/integrations" className={`nav${route.name === "integrations" ? " nav-on" : ""}`} aria-current={route.name === "integrations" ? "page" : undefined}>
           <Plug />

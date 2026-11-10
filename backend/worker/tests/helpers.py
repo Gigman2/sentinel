@@ -38,12 +38,18 @@ def make_incident(conn: psycopg.Connection, seeded: dict[str, str], links: list[
     return the incident ID."""
     trigger_id = next(event_id for event_id, reason in links if reason == "trigger")
     incident_id = conn.execute(
-        """INSERT INTO incidents (organization_id, project_id, component_id, environment, fingerprint, status,
-                                  severity, title, first_seen_at, last_seen_at, trigger_event_id)
-           VALUES (%s, %s, %s, 'production', %s, 'open', 'critical', 'Payment errors affecting checkout', %s, %s, %s)
+        """WITH counter AS (
+               UPDATE projects SET next_incident_number = next_incident_number + 1
+               WHERE id = %(project)s RETURNING next_incident_number - 1 AS number)
+           INSERT INTO incidents (organization_id, project_id, component_id, environment, fingerprint, status,
+                                  severity, title, first_seen_at, last_seen_at, trigger_event_id, number)
+           SELECT %(org)s, %(project)s, %(component)s, 'production', %(fingerprint)s, 'open', 'critical',
+                  'Payment errors affecting checkout', %(first)s, %(last)s, %(trigger)s, counter.number
+           FROM counter
            RETURNING id::text""",
-        (seeded["org"], seeded["project"], seeded["component"], fingerprint, first_seen,
-         last_seen or first_seen, trigger_id)).fetchone()[0]
+        {"org": seeded["org"], "project": seeded["project"], "component": seeded["component"],
+         "fingerprint": fingerprint, "first": first_seen, "last": last_seen or first_seen,
+         "trigger": trigger_id}).fetchone()[0]
     for event_id, reason in links:
         conn.execute("INSERT INTO incident_events (incident_id, event_id, reason, linked_at) VALUES (%s, %s, %s, now())",
                      (incident_id, event_id, reason))

@@ -58,9 +58,16 @@ type Resolution struct {
 	Note   *string `json:"note"`
 }
 
+// User names a person in a view.
+type User struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+}
+
 // Incident is the engineer-facing view of an incident.
 type Incident struct {
 	ID             string        `json:"id"`
+	Number         int64         `json:"number"`
 	ProjectID      string        `json:"project_id"`
 	Component      Component     `json:"component"`
 	Environment    string        `json:"environment"`
@@ -73,7 +80,9 @@ type Incident struct {
 	EvidenceWindow Window        `json:"evidence_window"`
 	ResolvedAt     *time.Time    `json:"resolved_at"`
 	Resolution     *Resolution   `json:"resolution"`
+	ResolvedBy     *User         `json:"resolved_by"`
 	TriggerEventID string        `json:"trigger_event_id"`
+	SignalCount    int           `json:"signal_count"`
 	Analysis       analysis.View `json:"analysis"`
 }
 
@@ -129,6 +138,7 @@ func (s Service) Get(ctx context.Context, orgID, incidentID string) (Incident, e
 	start, end := EvidenceWindow(r.FirstSeenAt, r.LastSeenAt)
 	inc := Incident{
 		ID:             r.ID,
+		Number:         r.Number,
 		ProjectID:      r.ProjectID,
 		Component:      Component{ID: r.ComponentID, Slug: r.ComponentSlug, DisplayName: r.ComponentName},
 		Environment:    r.Environment,
@@ -140,7 +150,11 @@ func (s Service) Get(ctx context.Context, orgID, incidentID string) (Incident, e
 		LastSeenAt:     r.LastSeenAt.UTC(),
 		EvidenceWindow: Window{Start: start, End: end},
 		TriggerEventID: r.TriggerEventID,
+		SignalCount:    r.SignalCount,
 		Analysis:       view,
+	}
+	if r.ResolvedByID != nil && r.ResolvedByName != nil {
+		inc.ResolvedBy = &User{ID: *r.ResolvedByID, DisplayName: *r.ResolvedByName}
 	}
 	if r.ResolvedAt != nil {
 		t := r.ResolvedAt.UTC()
@@ -152,9 +166,10 @@ func (s Service) Get(ctx context.Context, orgID, incidentID string) (Incident, e
 	return inc, nil
 }
 
-// Resolve manually resolves an open incident visible to orgID. A note longer
-// than MaxNoteRunes is an *httpx.Error; an empty note is stored as none.
-func (s Service) Resolve(ctx context.Context, orgID, incidentID, note string) (Incident, error) {
+// Resolve manually resolves an open incident visible to orgID on behalf of
+// userID, who is recorded as the resolver. A note longer than MaxNoteRunes
+// is an *httpx.Error; an empty note is stored as none.
+func (s Service) Resolve(ctx context.Context, orgID, userID, incidentID, note string) (Incident, error) {
 	if utf8.RuneCountInString(note) > MaxNoteRunes {
 		return Incident{}, &httpx.Error{Status: http.StatusBadRequest, Code: "invalid_note",
 			Message: "note must be at most 4000 characters"}
@@ -181,7 +196,7 @@ func (s Service) Resolve(ctx context.Context, orgID, incidentID, note string) (I
 		return Incident{}, ErrAlreadyResolved
 	}
 	now := s.Now().UTC()
-	if err := markIncidentResolved(ctx, tx, incidentID, now, ResolutionManual, notePtr, now); err != nil {
+	if err := markIncidentResolved(ctx, tx, incidentID, now, ResolutionManual, notePtr, &userID, now); err != nil {
 		return Incident{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -190,16 +205,21 @@ func (s Service) Resolve(ctx context.Context, orgID, incidentID, note string) (I
 	return s.Get(ctx, orgID, incidentID)
 }
 
-// ListItem is one incident in a project listing.
+// ListItem is one incident in a project listing. AnalysisStatus is derived
+// as in the detail view: the newest job's status, or "none".
 type ListItem struct {
-	ID          string        `json:"id"`
-	Status      string        `json:"status"`
-	Severity    string        `json:"severity"`
-	Title       string        `json:"title"`
-	Component   ListComponent `json:"component"`
-	Environment string        `json:"environment"`
-	FirstSeenAt time.Time     `json:"first_seen_at"`
-	LastSeenAt  time.Time     `json:"last_seen_at"`
+	ID             string        `json:"id"`
+	Number         int64         `json:"number"`
+	Status         string        `json:"status"`
+	Severity       string        `json:"severity"`
+	Title          string        `json:"title"`
+	Component      ListComponent `json:"component"`
+	Environment    string        `json:"environment"`
+	FirstSeenAt    time.Time     `json:"first_seen_at"`
+	LastSeenAt     time.Time     `json:"last_seen_at"`
+	AnalysisStatus string        `json:"analysis_status"`
+	SignalCount    int           `json:"signal_count"`
+	ResolutionNote *string       `json:"resolution_note"`
 }
 
 // ListComponent names an incident's component in a listing.
@@ -209,38 +229,62 @@ type ListComponent struct {
 }
 
 // Page is one page of a listing. NextCursor is null on the last page.
+// OpenCount is the project's open incidents, whatever the filters.
 type Page struct {
 	Items      []ListItem `json:"items"`
 	NextCursor *string    `json:"next_cursor"`
+	OpenCount  int        `json:"open_count"`
 }
 
+// ListQuery holds a listing's raw query values, as sent.
+type ListQuery struct {
+	Status, Severity, Component, Since, Q, Limit, Cursor string
+}
+
+// MaxQueryRunes is the longest title search accepted.
+const MaxQueryRunes = 200
+
 // List returns a page of a project's incidents, newest last_seen_at first.
-// The raw query values are checked in this order: project visible to orgID
-// (ErrProjectNotFound), then status, limit and cursor (each an *httpx.Error).
-func (s Service) List(ctx context.Context, orgID, projectID, status, limit, rawCursor string) (Page, error) {
+// The project must be visible to orgID (ErrProjectNotFound); then each
+// query value is checked in the order status, severity, since, q, limit,
+// cursor (each an *httpx.Error). An unknown component slug matches nothing.
+// An empty value is no filter.
+func (s Service) List(ctx context.Context, orgID, projectID string, lq ListQuery) (Page, error) {
 	if err := tenancy.ProjectInOrg(ctx, s.Pool, orgID, projectID); err != nil {
 		if errors.Is(err, tenancy.ErrNotFound) {
 			return Page{}, ErrProjectNotFound
 		}
 		return Page{}, err
 	}
-	if status != "" && status != domain.IncidentOpen && status != domain.IncidentResolved {
-		return Page{}, badRequest("invalid_status", "status must be open or resolved")
-	}
-	n, rej := parseLimit(limit, DefaultListLimit, MaxListLimit)
+	f, rej := parseListFilter(lq)
 	if rej != nil {
 		return Page{}, rej
 	}
-	after, rej := parseCursor(rawCursor)
+	n, rej := parseLimit(lq.Limit, DefaultListLimit, MaxListLimit)
+	if rej != nil {
+		return Page{}, rej
+	}
+	after, rej := parseCursor(lq.Cursor)
 	if rej != nil {
 		return Page{}, rej
 	}
 
-	rows, err := listIncidents(ctx, s.Pool, orgID, projectID, status, after, n+1)
+	// One snapshot, so open_count agrees with the rows.
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return Page{}, err
 	}
-	page := Page{Items: make([]ListItem, 0, min(len(rows), n))}
+	defer tx.Rollback(ctx)
+	rows, err := listIncidents(ctx, tx, orgID, projectID, f, after, n+1)
+	if err != nil {
+		return Page{}, err
+	}
+	open, err := openIncidentCount(ctx, tx, orgID, projectID)
+	if err != nil {
+		return Page{}, err
+	}
+
+	page := Page{Items: make([]ListItem, 0, min(len(rows), n)), OpenCount: open}
 	for i, r := range rows {
 		if i == n {
 			last := rows[n-1]
@@ -248,13 +292,40 @@ func (s Service) List(ctx context.Context, orgID, projectID, status, limit, rawC
 			page.NextCursor = &next
 			break
 		}
+		status := analysis.StatusNone
+		if r.AnalysisStatus != nil {
+			status = *r.AnalysisStatus
+		}
 		page.Items = append(page.Items, ListItem{
-			ID: r.ID, Status: r.Status, Severity: r.Severity, Title: r.Title,
+			ID: r.ID, Number: r.Number, Status: r.Status, Severity: r.Severity, Title: r.Title,
 			Component:   ListComponent{Slug: r.ComponentSlug, DisplayName: r.ComponentName},
 			Environment: r.Environment, FirstSeenAt: r.FirstSeenAt.UTC(), LastSeenAt: r.LastSeenAt.UTC(),
+			AnalysisStatus: status, SignalCount: r.SignalCount, ResolutionNote: r.ResolutionNote,
 		})
 	}
 	return page, nil
+}
+
+// parseListFilter checks the filter values of a listing.
+func parseListFilter(lq ListQuery) (listFilter, *httpx.Error) {
+	f := listFilter{Status: lq.Status, Severity: lq.Severity, Component: lq.Component, Query: lq.Q}
+	if f.Status != "" && f.Status != domain.IncidentOpen && f.Status != domain.IncidentResolved {
+		return f, badRequest("invalid_status", "status must be open or resolved")
+	}
+	if f.Severity != "" && domain.SeverityRank(f.Severity) < 0 {
+		return f, badRequest("invalid_severity", "severity must be one of info, warning, error, critical")
+	}
+	if lq.Since != "" {
+		t, err := time.Parse(time.RFC3339, lq.Since)
+		if err != nil {
+			return f, badRequest("invalid_since", "since must be an RFC 3339 time")
+		}
+		f.Since = &t
+	}
+	if !utf8.ValidString(f.Query) || strings.ContainsRune(f.Query, 0) || utf8.RuneCountInString(f.Query) > MaxQueryRunes {
+		return f, badRequest("invalid_q", fmt.Sprintf("q must be valid text of at most %d characters", MaxQueryRunes))
+	}
+	return f, nil
 }
 
 // parseLimit reads a page size: def when raw is empty, else an integer in [1, max].
