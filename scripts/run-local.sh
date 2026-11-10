@@ -17,7 +17,7 @@ cd "$root"
 source scripts/load-env.sh
 load_dotenv .env
 
-export DATABASE_URL="${DATABASE_URL:-postgres://sentinel:sentinel@localhost:5432/sentinel?sslmode=disable}"
+export DATABASE_URL="${DATABASE_URL:-postgres://sentinel:sentinel@localhost:${SENTINEL_DB_PORT:-5432}/sentinel?sslmode=disable}"
 export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-8080}"
 

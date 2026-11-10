@@ -17,6 +17,7 @@ import (
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/integrations"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/tenancy"
 	"github.com/Gigman2/sentinel/backend/api/internal/platform/httpx"
+	"github.com/Gigman2/sentinel/backend/api/internal/platform/metrics"
 )
 
 // Deps are the server's dependencies.
@@ -61,6 +62,12 @@ func New(d Deps) http.Handler {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// Unauthenticated. Reachable from the host only through loopback-bound
+	// ports, and from inside the Compose network; never deploy the API
+	// beyond the local machine as is (docs/adr/0001).
+	met, metricsHandler := metrics.New(d.Pool)
+	mux.Handle("GET /metrics", metricsHandler)
+
 	user := auth.RequireUser(d.Pool, d.Logger)
 	admin := func(h http.HandlerFunc) http.Handler { return user(auth.RequireAdmin(h)) }
 	member := func(h http.HandlerFunc) http.Handler { return user(h) }
@@ -86,6 +93,7 @@ func New(d Deps) http.Handler {
 		Service: ingest.Service{Pool: d.Pool, Now: d.Now},
 		Limiter: ingest.NewLimiter(d.IngestRate, d.IngestBurst),
 		Log:     d.Logger,
+		Outcome: met.IngestOutcome,
 	})
 
 	inc := incidents.Handlers{Service: incidents.Service{Pool: d.Pool, Now: d.Now}, Log: d.Logger}
