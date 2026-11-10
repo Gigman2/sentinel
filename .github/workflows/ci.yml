@@ -19,7 +19,7 @@ jobs:
       - name: Validate docker-compose.yml
         run: docker compose config --quiet
       - name: Test shell helpers
-        run: ./scripts/test-load-env.sh
+        run: ./scripts/test-load-env.sh && ./scripts/test-check-demo-env.sh
 
   api:
     name: Backend API (Go)

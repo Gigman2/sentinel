@@ -7,10 +7,15 @@
     python3 scripts/demo.py late-deployment     # the deployment arrives after analysis
     python3 scripts/demo.py duplicate           # one alert sent twice
 
-Settings come from the environment, then the repo's .env:
-SENTINEL_URL (default http://127.0.0.1:8080), SENTINEL_UI_URL (default
-http://127.0.0.1:5173), SEED_ADMIN_TOKEN, SEED_MONITOR_TOKEN and
-SEED_DEPLOY_TOKEN. Standard library only.
+Settings come from the environment, then the repo's .env. The API is
+SENTINEL_URL if set, else http://127.0.0.1 on SENTINEL_API_PORT (the Compose
+stack), else PORT (`make run`), else 8080. The UI links use SENTINEL_UI_URL,
+else SENTINEL_UI_PORT, else 5173. Tokens: SEED_ADMIN_TOKEN,
+SEED_MONITOR_TOKEN and SEED_DEPLOY_TOKEN.
+
+Each run registers its own component (demo-<nonce>) and maps it in both
+integrations, so earlier runs' events never land in this run's windows.
+Standard library only.
 """
 
 from __future__ import annotations
@@ -44,9 +49,11 @@ def load_settings() -> dict[str, str]:
                 key, value = line.split("=", 1)
                 file[key.strip()] = value.strip().strip("'\"")
     get = lambda key, default="": os.environ.get(key) or file.get(key) or default  # noqa: E731
+    api_port = get("SENTINEL_API_PORT") or get("PORT") or "8080"
+    ui_port = get("SENTINEL_UI_PORT") or "5173"
     settings = {
-        "url": get("SENTINEL_URL", "http://127.0.0.1:8080").rstrip("/"),
-        "ui": get("SENTINEL_UI_URL", "http://127.0.0.1:5173").rstrip("/"),
+        "url": get("SENTINEL_URL", f"http://127.0.0.1:{api_port}").rstrip("/"),
+        "ui": get("SENTINEL_UI_URL", f"http://127.0.0.1:{ui_port}").rstrip("/"),
         "admin": get("SEED_ADMIN_TOKEN"),
         "monitor": get("SEED_MONITOR_TOKEN"),
         "deploy": get("SEED_DEPLOY_TOKEN"),
@@ -54,7 +61,8 @@ def load_settings() -> dict[str, str]:
     missing = [k for k in ("SEED_ADMIN_TOKEN", "SEED_MONITOR_TOKEN", "SEED_DEPLOY_TOKEN")
                if not settings[k.removeprefix("SEED_").removesuffix("_TOKEN").lower()]]
     if missing:
-        raise Fail(f"{', '.join(missing)} not set (run `make .env`, or export them)")
+        raise Fail(f"{', '.join(missing)} not set. Copy the SEED_* lines from .env.example into .env "
+                   "(then `make up` again so the stack is seeded with them), or export them.")
     return settings
 
 
@@ -84,6 +92,12 @@ class Client:
             raise Fail(f"GET {path}: HTTP {status} {body}")
         return body  # type: ignore[return-value]
 
+    def post(self, path: str, body: dict) -> dict:
+        status, out = self.call("POST", path, self.s["admin"], body)
+        if status != 201:
+            raise Fail(f"POST {path}: HTTP {status} {out}")
+        return out  # type: ignore[return-value]
+
     def ingest(self, integration: str, token: str, event: dict, want: tuple[int, ...] = (201,)) -> dict:
         status, body = self.call("POST", f"/v1/ingest/{integration}/events", token, event)
         if status not in want:
@@ -108,25 +122,35 @@ class Demo:
             raise Fail(f"integrations monitor and deploys not found (have {sorted(integrations)})")
         self.monitor, self.deploys = integrations["monitor"], integrations["deploys"]
 
+        # A component of this run's own, known to both integrations as its slug.
+        self.slug = f"demo-{self.nonce}"
+        component = client.post(f"/v1/projects/{project['id']}/components", {
+            "slug": self.slug, "display_name": f"Demo {self.nonce}", "environment": "production",
+            "description": "Created by scripts/demo.py"})
+        for integration in (self.monitor, self.deploys):
+            client.post(f"/v1/integrations/{integration}/mappings", {
+                "external_component_id": self.slug, "environment": "production", "component_id": component["id"]})
+        print(f"API {client.s['url']}; this run's component: {self.slug}")
+
     # Events. Each scenario gets its own fingerprint, so it opens its own incident.
     def alert(self, scenario: str, at: dt.datetime, n: int = 1) -> dict:
         return {"schema_version": "1", "source_event_id": f"demo-{self.nonce}-{scenario}-alert-{n}",
-                "type": "alert.triggered", "occurred_at": iso(at), "external_component_id": "payments-prod",
+                "type": "alert.triggered", "occurred_at": iso(at), "external_component_id": self.slug,
                 "environment": "production", "severity": "critical", "fingerprint": f"demo-{self.nonce}-{scenario}",
                 "summary": "Payment errors affecting checkout",
                 "source_url": "https://monitor.example/alerts/demo"}
 
     def error(self, scenario: str, at: dt.datetime) -> dict:
         return {"schema_version": "1", "source_event_id": f"demo-{self.nonce}-{scenario}-error",
-                "type": "error.observed", "occurred_at": iso(at), "external_component_id": "payments-prod",
+                "type": "error.observed", "occurred_at": iso(at), "external_component_id": self.slug,
                 "environment": "production", "severity": "error", "summary": "PaymentGatewayTimeout",
                 "attributes": {"count": 42}}
 
     def deployment(self, scenario: str, at: dt.datetime) -> dict:
         return {"schema_version": "1", "source_event_id": f"demo-{self.nonce}-{scenario}-deploy",
-                "type": "deployment.completed", "deployed_at": iso(at), "external_component_id": "payment-service",
+                "type": "deployment.completed", "deployed_at": iso(at), "external_component_id": self.slug,
                 "environment": "production", "version": "1.8.4", "commit_sha": "4f1c2e9",
-                "repository": "uppsel/payments", "summary": "Deploy payment-service 1.8.4",
+                "repository": "uppsel/payments", "summary": f"Deploy {self.slug} 1.8.4",
                 "source_url": "https://deploys.example/payments/1.8.4"}
 
     def send_alert(self, scenario: str, at: dt.datetime) -> tuple[str, str]:

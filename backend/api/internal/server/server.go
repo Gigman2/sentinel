@@ -62,7 +62,9 @@ func New(d Deps) http.Handler {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	// Unauthenticated: the API listens on loopback only (see docs/adr/0001).
+	// Unauthenticated. Reachable from the host only through loopback-bound
+	// ports, and from inside the Compose network; never deploy the API
+	// beyond the local machine as is (docs/adr/0001).
 	met, metricsHandler := metrics.New(d.Pool)
 	mux.Handle("GET /metrics", metricsHandler)
 

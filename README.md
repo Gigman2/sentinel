@@ -32,7 +32,7 @@ make up      # build and start PostgreSQL, the API, the worker and the UI
 make demo    # send four demo scenarios through the API; each prints PASS or FAIL
 ```
 
-Then open <http://127.0.0.1:5173> and sign in with `SEED_ADMIN_TOKEN` from `.env`. `make up` creates `.env` from `.env.example` the first time; its tokens are fixed demo values for this local stack only.
+Then open <http://127.0.0.1:5173> and sign in with `SEED_ADMIN_TOKEN` from `.env`. `make up` creates `.env` from `.env.example` the first time; its tokens are fixed demo values for this local stack only. If you already have a `.env` without them, `make up` stops and prints the lines to add.
 
 | What | Where |
 |---|---|
@@ -40,7 +40,7 @@ Then open <http://127.0.0.1:5173> and sign in with `SEED_ADMIN_TOKEN` from `.env
 | API | <http://127.0.0.1:8080> (`/healthz`, `/metrics`, `/v1/...`) |
 | PostgreSQL | `127.0.0.1:5432`, user and password `sentinel` |
 
-Every port binds to `127.0.0.1` only. Move them with `SENTINEL_UI_PORT`, `SENTINEL_API_PORT` and `SENTINEL_DB_PORT`. `make down` stops the stack and keeps the data; `make reset` deletes the data and starts again.
+Every port binds to `127.0.0.1` only. Move them with `SENTINEL_UI_PORT`, `SENTINEL_API_PORT` and `SENTINEL_DB_PORT` in `.env` or the environment; `make run`, `make test` and the demo follow them. `make down` stops the stack and keeps the data; `make reset` deletes the data and starts again.
 
 ### The demo scenarios
 
@@ -51,7 +51,7 @@ Every port binds to `127.0.0.1` only. Move them with `SENTINEL_UI_PORT`, `SENTIN
 - `late-deployment`: the alert is analysed, then the deployment arrives. A second revision appears, and the revision history shows what changed.
 - `duplicate`: one alert sent twice. The second send gets the first event back.
 
-Each prints the timeline, the findings and a link to the incident in the UI.
+Each run registers its own component (`demo-<id>`), so runs never see each other's events. Each scenario prints the timeline, the findings and a link to the incident in the UI. The demo calls `SENTINEL_URL` if set, otherwise the API on `SENTINEL_API_PORT`, then `PORT` (for `make run`), then 8080.
 
 ### Send an event yourself
 

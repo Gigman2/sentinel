@@ -6,4 +6,5 @@ Override `DATABASE_URL`, `HOST`, `PORT` or the `SEED_*` variables in the environ
 
 - `load-env.sh` — the `.env` loader used by `run-local.sh` (`load_dotenv FILE`); `test-load-env.sh` tests it (`make test-scripts`). Seed tokens are printed once, when first generated; to keep the same tokens across runs set `SEED_ADMIN_TOKEN`, `SEED_MONITOR_TOKEN` and `SEED_DEPLOY_TOKEN` in `.env`.
 
-- `demo.py` — the demo scenario driver (`make demo`): `happy`, `missing-deployment`, `late-deployment`, `duplicate` or `all`. Standard library only; reads `SENTINEL_URL` and the `SEED_*` tokens from the environment or `.env`.
+- `demo.py` — the demo scenario driver (`make demo`): `happy`, `missing-deployment`, `late-deployment`, `duplicate` or `all`. Standard library only. Each run registers its own `demo-<id>` component. Reads the API address (`SENTINEL_URL`, else `SENTINEL_API_PORT`, else `PORT`) and the `SEED_*` tokens from the environment or `.env`.
+- `check-demo-env.sh` — run by `make up`: stops with the lines to add when `.env` lacks the `SEED_*` tokens; `test-check-demo-env.sh` tests it.

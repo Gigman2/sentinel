@@ -46,8 +46,8 @@ The Phase 1 scope (`docs/scope/Sentinel_Phase_1_Core_Investigation.md`) leaves m
 
 ### Access and exposure
 
-- **Metrics:** `GET /metrics` is unauthenticated. It is safe only because the API port binds to loopback.
-  *Revisit when* the API is exposed beyond the local machine (Phase 3).
+- **Metrics:** `GET /metrics` is unauthenticated. From the host it is reachable only through the loopback-bound API port. Inside the Compose network the API listens on every interface, so any container on that network can read it; `make run` with an empty `HOST` exposes it on every host interface. Nothing it shows is tenant data (counts and an age), but each scrape queries the database.
+  *Revisit when* the API is exposed beyond the local machine (Phase 3), or untrusted containers join the Compose network.
 - **Loopback-only ports:** every port Compose publishes binds to `127.0.0.1`. The nginx front end does not proxy `/metrics`.
   *Revisit when* the stack is deployed anywhere shared.
 - **Single-membership tokens:** a user token is rejected (401 `ambiguous_membership`) when its user belongs to more than one organisation, until tokens carry an organisation.
