@@ -34,9 +34,10 @@ func deployment(sourceEventID string, at time.Time) map[string]any {
 	}
 }
 
-// completeJob stands in for the worker: the job started at startedAt and
-// wrote revision n with findings of the given (kind, rule_id).
-func (f fixture) completeJob(jobID, incidentID string, n int, startedAt time.Time, rules ...analysis.RuleRef) {
+// completeJob stands in for the worker: the job started at startedAt, read
+// the events in seen and wrote revision n with findings of the given
+// (kind, rule_id).
+func (f fixture) completeJob(jobID, incidentID string, n int, startedAt time.Time, seen []string, rules ...analysis.RuleRef) {
 	f.t.Helper()
 	f.exec(`UPDATE analysis_jobs SET status = 'succeeded', attempts = 1, started_at = $2, finished_at = $3 WHERE id = $1`,
 		jobID, startedAt, startedAt.Add(2*time.Second))
@@ -48,6 +49,9 @@ func (f fixture) completeJob(jobID, incidentID string, n int, startedAt time.Tim
 	}
 	for i, r := range rules {
 		f.exec(`INSERT INTO findings (revision_id, ordinal, kind, rule_id, text) VALUES ($1, $2, $3, $4, 'text')`, rev, i, r.Kind, r.RuleID)
+	}
+	for _, e := range seen {
+		f.exec(`INSERT INTO revision_events (revision_id, event_id) VALUES ($1, $2)`, rev, e)
 	}
 }
 
@@ -96,7 +100,7 @@ func TestRevisionHistoryFirstRevision(t *testing.T) {
 	job, _ := f.pendingJob(incidentID)
 
 	*clock = now.Add(time.Minute)
-	f.completeJob(job, incidentID, 1, now.Add(30*time.Second), rule("observation", "trigger_alert"), rule("next_check", "inspect_telemetry"))
+	f.completeJob(job, incidentID, 1, now.Add(30*time.Second), []string{deployID, alertID}, rule("observation", "trigger_alert"), rule("next_check", "inspect_telemetry"))
 
 	// The raw JSON must carry "changes": null.
 	w := testutil.GetJSON(t, f.h, "/v1/incidents/"+incidentID+"/revisions", f.s.AdminToken)
@@ -132,7 +136,7 @@ func TestRevisionHistoryLateDeployment(t *testing.T) {
 	f, clock := newClockFixture(t)
 	incidentID, alertID := f.openIncident()
 	job1, _ := f.pendingJob(incidentID)
-	f.completeJob(job1, incidentID, 1, now.Add(30*time.Second),
+	f.completeJob(job1, incidentID, 1, now.Add(30*time.Second), []string{alertID},
 		rule("observation", "trigger_alert"),
 		rule("unknown", "no_deployment_evidence"),
 		rule("unknown", "no_error_evidence"),
@@ -145,7 +149,7 @@ func TestRevisionHistoryLateDeployment(t *testing.T) {
 	if reason != analysis.ReasonLateEvent {
 		t.Fatalf("late deployment enqueued %q", reason)
 	}
-	f.completeJob(job2, incidentID, 2, now.Add(6*time.Minute),
+	f.completeJob(job2, incidentID, 2, now.Add(6*time.Minute), []string{alertID, deployID},
 		rule("observation", "trigger_alert"),
 		rule("observation", "deployment_in_window"),
 		rule("hypothesis", "deployment_near_onset"),
@@ -154,7 +158,7 @@ func TestRevisionHistoryLateDeployment(t *testing.T) {
 		rule("next_check", "review_change"),
 		rule("next_check", "inspect_telemetry"))
 
-	// Linked after job 2 started: no revision has seen it yet.
+	// Linked after job 2 read its evidence: no revision has seen it yet.
 	*clock = now.Add(7 * time.Minute)
 	f.ingest(f.s.DeployIntegrationID, f.s.DeployToken, deployment("deploy-later", now.Add(-3*time.Minute)))
 
@@ -194,7 +198,7 @@ func TestRevisionByNumber404(t *testing.T) {
 	}
 	incidentID, _ := f.openIncident()
 	job, _ := f.pendingJob(incidentID)
-	f.completeJob(job, incidentID, 1, now, rule("observation", "trigger_alert"), rule("next_check", "inspect_telemetry"))
+	f.completeJob(job, incidentID, 1, now, nil, rule("observation", "trigger_alert"), rule("next_check", "inspect_telemetry"))
 
 	base := "/v1/incidents/" + incidentID + "/revisions"
 	w := testutil.GetJSON(t, f.h, base+"/1", f.s.AdminToken)
@@ -210,6 +214,8 @@ func TestRevisionByNumber404(t *testing.T) {
 		"missing revision":      {base + "/2", f.s.AdminToken},
 		"zero":                  {base + "/0", f.s.AdminToken},
 		"not a number":          {base + "/one", f.s.AdminToken},
+		"beyond int4":           {base + "/3000000000", f.s.AdminToken},
+		"beyond int64":          {base + "/99999999999999999999", f.s.AdminToken},
 		"other org revision":    {base + "/1", other.AdminToken},
 		"other org history":     {base, other.AdminToken},
 		"unknown incident":      {"/v1/incidents/2dd80324-2e0e-421e-95f0-f848067c4124/revisions", f.s.AdminToken},
@@ -269,9 +275,80 @@ func TestDetailShowsJobTimes(t *testing.T) {
 		t.Fatalf("running: %+v", a)
 	}
 
-	f.completeJob(job, incidentID, 1, started)
+	f.completeJob(job, incidentID, 1, started, nil)
 	a = f.detailAnalysis(incidentID)
 	if a.Status != "succeeded" || !a.StartedAt.Equal(started) || a.FinishedAt == nil || !a.FinishedAt.Equal(started.Add(2*time.Second)) || a.RevisionCount != 1 {
 		t.Fatalf("succeeded: %+v", a)
+	}
+}
+
+// A job that was first leased before a late event arrived, failed, and read
+// the event on its retry: the event is new evidence in that revision, not
+// the next one. Start times play no part.
+func TestRevisionHistoryRetrySeesLateEvent(t *testing.T) {
+	f, clock := newClockFixture(t)
+	incidentID, alertID := f.openIncident()
+	job, _ := f.pendingJob(incidentID)
+	*clock = now.Add(5 * time.Minute)
+	deployID, _ := f.ingest(f.s.DeployIntegrationID, f.s.DeployToken, deployment("deploy-late", now.Add(-7*time.Minute)))
+	f.completeJob(job, incidentID, 1, now.Add(time.Second), []string{alertID, deployID}, rule("observation", "trigger_alert"))
+
+	h := f.history(incidentID)
+	if got := eventIDs(h[0].NewEvidence); !slices.Equal(got, sorted(alertID, deployID)) {
+		t.Fatalf("retried revision 1 new evidence %v", got)
+	}
+}
+
+// Two jobs overlapped and the older one finished last: its revision read
+// nothing the previous revision had not, so it has no new evidence, and
+// nothing is listed twice.
+func TestRevisionHistoryOverlappingJobs(t *testing.T) {
+	f, clock := newClockFixture(t)
+	incidentID, alertID := f.openIncident()
+	older, _ := f.pendingJob(incidentID)
+	f.exec(`UPDATE analysis_jobs SET status = 'running' WHERE id = $1`, older)
+	*clock = now.Add(5 * time.Minute)
+	deployID, _ := f.ingest(f.s.DeployIntegrationID, f.s.DeployToken, deployment("deploy-late", now.Add(-7*time.Minute)))
+	newer, _ := f.pendingJob(incidentID)
+
+	f.completeJob(newer, incidentID, 1, now.Add(6*time.Minute), []string{alertID, deployID}, rule("observation", "deployment_in_window"))
+	f.completeJob(older, incidentID, 2, now.Add(time.Second), []string{alertID}, rule("observation", "trigger_alert"))
+
+	h := f.history(incidentID)
+	if h[0].NewEvidence == nil || len(h[0].NewEvidence) != 0 {
+		t.Fatalf("revision 2 new evidence %+v, want []", h[0].NewEvidence)
+	}
+	if got := eventIDs(h[1].NewEvidence); !slices.Equal(got, sorted(alertID, deployID)) {
+		t.Fatalf("revision 1 new evidence %v", got)
+	}
+}
+
+// Revisions from before revision_events existed report new evidence as
+// unknown (null), and so does the first revision after them.
+func TestRevisionHistoryLegacyRevisions(t *testing.T) {
+	f := newFixture(t)
+	incidentID, alertID := f.openIncident()
+	job1, _ := f.pendingJob(incidentID)
+	f.completeJob(job1, incidentID, 1, now, nil, rule("observation", "trigger_alert"))
+	job2, err := f.enqueue(incidentID, analysis.ReasonManualRetry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.completeJob(job2, incidentID, 2, now.Add(time.Minute), []string{alertID}, rule("observation", "trigger_alert"))
+	job3, err := f.enqueue(incidentID, analysis.ReasonManualRetry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.completeJob(job3, incidentID, 3, now.Add(2*time.Minute), []string{alertID}, rule("observation", "trigger_alert"))
+
+	w := testutil.GetJSON(t, f.h, "/v1/incidents/"+incidentID+"/revisions", f.s.AdminToken)
+	raw := testutil.Decode[struct {
+		Items []map[string]any `json:"items"`
+	}](t, w).Items
+	if raw[2]["new_evidence"] != nil || raw[1]["new_evidence"] != nil {
+		t.Fatalf("legacy new_evidence: rev1 %v rev2 %v, want null", raw[2]["new_evidence"], raw[1]["new_evidence"])
+	}
+	if ev, ok := raw[0]["new_evidence"].([]any); !ok || len(ev) != 0 {
+		t.Fatalf("revision 3 new_evidence %v, want []", raw[0]["new_evidence"])
 	}
 }

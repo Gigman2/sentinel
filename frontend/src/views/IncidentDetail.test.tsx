@@ -309,6 +309,37 @@ describe("incident detail", () => {
       const analysis = await screen.findByRole("region", { name: "Analysis" });
       expect(within(analysis).getByText("Failed", { selector: ".prop > span:first-child" }).nextSibling).toHaveTextContent("14:10:15 UTC");
       expect(within(analysis).getByText("Elapsed").nextSibling).toHaveTextContent("1:01");
+      // The findings on screen are from the last revision, written earlier.
+      expect(within(analysis).getByText("Revised").nextSibling).toHaveTextContent("14:09:48 UTC");
+    });
+
+    it("does not count elapsed time while a job waits to retry", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date("2026-11-09T14:12:00Z"));
+      const inc = referenceIncident();
+      inc.analysis = { ...inc.analysis, status: "pending", last_error: "RuntimeError: boom", started_at: "2026-11-09T14:10:00Z", finished_at: null };
+      mockFetch({
+        "GET /v1/projects": () => projects,
+        [`GET ${detailPath}`]: () => inc,
+        [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+      });
+      render(<App />);
+      const analysis = await screen.findByRole("region", { name: "Analysis" });
+      expect(within(analysis).getByText("Waiting to retry")).toBeInTheDocument();
+      expect(within(analysis).queryByText("Elapsed")).toBeNull();
+      expect(within(analysis).getByText("Revised").nextSibling).toHaveTextContent("14:09:48 UTC");
+    });
+
+    it("hides Revised when the newest job wrote the revision on screen", async () => {
+      mockFetch({
+        "GET /v1/projects": () => projects,
+        [`GET ${detailPath}`]: () => referenceIncident(),
+        [`GET ${detailPath}/timeline`]: () => referenceTimeline(),
+      });
+      render(<App />);
+      const analysis = await screen.findByRole("region", { name: "Analysis" });
+      expect(within(analysis).getByText("Completed")).toBeInTheDocument();
+      expect(within(analysis).queryByText("Revised")).toBeNull();
     });
   });
 

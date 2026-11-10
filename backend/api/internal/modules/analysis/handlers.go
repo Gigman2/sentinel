@@ -58,12 +58,13 @@ func (h Handlers) Revisions(w http.ResponseWriter, r *http.Request) {
 // Revision handles GET /v1/incidents/{incidentId}/revisions/{n}.
 func (h Handlers) Revision(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("incidentId")
-	n, convErr := strconv.Atoi(r.PathValue("n"))
+	// revision_number is a 32-bit integer; anything larger cannot exist.
+	n, convErr := strconv.ParseInt(r.PathValue("n"), 10, 32)
 	if !httpx.IsUUID(id) || convErr != nil || n < 1 {
 		writeNotFound(w, r)
 		return
 	}
-	rev, err := h.Service.RevisionByNumber(r.Context(), auth.PrincipalFrom(r.Context()).OrganizationID, id, n)
+	rev, err := h.Service.RevisionByNumber(r.Context(), auth.PrincipalFrom(r.Context()).OrganizationID, id, int(n))
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeNotFound(w, r)

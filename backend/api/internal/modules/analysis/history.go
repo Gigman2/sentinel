@@ -19,7 +19,9 @@ type HistoryItem struct {
 	Reason         string    `json:"reason"`
 	FindingCount   int       `json:"finding_count"`
 	// Changes is nil for revision 1, which has nothing to compare against.
-	Changes     *Changes       `json:"changes"`
+	Changes *Changes `json:"changes"`
+	// NewEvidence is nil when unknown: the revision, or the one before it,
+	// was written before revisions recorded the events they read.
 	NewEvidence []EvidenceLink `json:"new_evidence"`
 }
 
@@ -35,8 +37,7 @@ type RuleRef struct {
 	RuleID string `json:"rule_id"`
 }
 
-// EvidenceLink is an event linked to the incident since the previous
-// revision's job started.
+// EvidenceLink is an event this revision read that the previous one did not.
 type EvidenceLink struct {
 	EventID    string    `json:"event_id"`
 	Type       string    `json:"type"`
@@ -45,11 +46,11 @@ type EvidenceLink struct {
 
 // History returns the incident's revisions, newest first.
 //
-// New evidence for a revision is every event linked after the previous
-// revision's job started and at or before this revision's job started, so
-// each link is attributed to exactly one revision: the first whose job could
-// have seen it. Links made after the newest revision's job started belong to
-// no revision yet.
+// A revision's new evidence is the events its analysis read that the
+// previous revision's did not (for revision 1, everything it read), taken
+// from the sets the worker records. It does not depend on when jobs started
+// or events were linked, so retries, overlapping jobs and clock skew cannot
+// misplace it.
 func (s Service) History(ctx context.Context, orgID, incidentID string) ([]HistoryItem, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -70,14 +71,20 @@ func (s Service) History(ctx context.Context, orgID, incidentID string) ([]Histo
 	if err != nil {
 		return nil, fmt.Errorf("read finding keys: %w", err)
 	}
-	links, err := incidentLinks(ctx, tx, incidentID)
+	seenRows, err := revisionSeenEvents(ctx, tx, incidentID)
 	if err != nil {
-		return nil, fmt.Errorf("read links: %w", err)
+		return nil, fmt.Errorf("read revision events: %w", err)
 	}
 
 	byRevision := map[string][]RuleRef{}
 	for _, k := range keys {
 		byRevision[k.RevisionID] = append(byRevision[k.RevisionID], RuleRef{Kind: k.Kind, RuleID: k.RuleID})
+	}
+	// Every analysis reads at least its trigger, so a revision with no
+	// recorded events predates recording.
+	seen := map[string][]EvidenceLink{}
+	for _, r := range seenRows {
+		seen[r.RevisionID] = append(seen[r.RevisionID], EvidenceLink{EventID: r.EventID, Type: r.Type, ReceivedAt: r.ReceivedAt.UTC()})
 	}
 
 	items := make([]HistoryItem, len(revs))
@@ -87,22 +94,38 @@ func (s Service) History(ctx context.Context, orgID, incidentID string) ([]Histo
 			CreatedAt:      r.CreatedAt.UTC(),
 			Reason:         r.Reason,
 			FindingCount:   len(byRevision[r.ID]),
-			NewEvidence:    []EvidenceLink{},
 		}
-		var after *time.Time
 		if i > 0 {
 			c := diffRules(byRevision[revs[i-1].ID], byRevision[r.ID])
 			item.Changes = &c
-			after = &revs[i-1].Cutoff
 		}
-		for _, l := range links {
-			if (after == nil || l.LinkedAt.After(*after)) && !l.LinkedAt.After(r.Cutoff) {
-				item.NewEvidence = append(item.NewEvidence, EvidenceLink{EventID: l.EventID, Type: l.Type, ReceivedAt: l.ReceivedAt.UTC()})
+		if cur := seen[r.ID]; len(cur) > 0 {
+			switch {
+			case i == 0:
+				item.NewEvidence = cur
+			case len(seen[revs[i-1].ID]) > 0:
+				item.NewEvidence = newSince(seen[revs[i-1].ID], cur)
 			}
 		}
 		items[len(revs)-1-i] = item
 	}
 	return items, nil
+}
+
+// newSince returns the events in cur that are not in prev, in cur's order
+// (never nil).
+func newSince(prev, cur []EvidenceLink) []EvidenceLink {
+	had := make(map[string]bool, len(prev))
+	for _, e := range prev {
+		had[e.EventID] = true
+	}
+	out := []EvidenceLink{}
+	for _, e := range cur {
+		if !had[e.EventID] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // diffRules returns what was added and removed going from prev to next,
