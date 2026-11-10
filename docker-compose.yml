@@ -1,5 +1,7 @@
 name: sentinel
 
+# Every published port binds to 127.0.0.1. Ports can be moved with
+# SENTINEL_DB_PORT, SENTINEL_API_PORT and SENTINEL_UI_PORT.
 services:
   postgres:
     image: postgres:17
@@ -8,7 +10,7 @@ services:
       POSTGRES_PASSWORD: sentinel # local development only
       POSTGRES_DB: sentinel
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${SENTINEL_DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -16,6 +18,47 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+  api:
+    build: backend/api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # .env supplies the SEED_* tokens; the settings below always win, so a
+    # .env written for `make run` cannot point the container elsewhere.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://sentinel:sentinel@postgres:5432/sentinel?sslmode=disable
+      HOST: ""
+      PORT: "8080"
+    ports:
+      - "127.0.0.1:${SENTINEL_API_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "sentinel-api", "healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  worker:
+    build: backend/worker
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://sentinel:sentinel@postgres:5432/sentinel?sslmode=disable
+    restart: unless-stopped
+
+  frontend:
+    build: frontend
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${SENTINEL_UI_PORT:-5173}:80"
+    restart: unless-stopped
 
 volumes:
   pgdata:

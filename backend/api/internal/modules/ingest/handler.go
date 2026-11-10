@@ -19,6 +19,8 @@ type Handler struct {
 	Service Service
 	Limiter *Limiter
 	Log     *slog.Logger
+	// Outcome, if set, is called once per request with its outcome.
+	Outcome func(outcome string)
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -30,6 +32,9 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		h.Log.Info("ingest", "request_id", httpx.RequestIDFrom(ctx), "integration_id", integrationID,
 			"event_id", eventID, "outcome", outcome)
+		if h.Outcome != nil {
+			h.Outcome(outcome)
+		}
 	}()
 	fail := func(e *httpx.Error) {
 		outcome = "rejected_" + e.Code
