@@ -8,8 +8,9 @@ would real data. It adds components, integration mappings and dependencies
 next to the seeded ones, then sends these stories:
 
     checkout-api          critical, open: a deployment, errors, then an alert that
-                          repeats and escalates from warning; a finding marked
-                          useful, a check marked done, and a manual reanalysis
+                          repeats and escalates from warning (revision 2), a
+                          manual reanalysis (revision 3), and on that latest
+                          revision a finding marked useful and a check marked done
     payment-service       error, open: the deployment arrives after the first
                           analysis, so revision 2 and its history appear
     ledger-service        error, resolved by its monitor's alert.resolved
@@ -27,9 +28,8 @@ from __future__ import annotations
 
 import datetime as dt
 import sys
-import time
 
-from demo import Client, Fail, iso, load_settings
+from demo import Client, Fail, iso, load_settings, locate, wait_for_analysis
 
 ENV = "production"
 
@@ -53,13 +53,7 @@ class Showcase:
     def __init__(self, client: Client):
         self.c = client
         self.now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-        projects = client.get("/v1/projects")["items"]
-        project = next((p for p in projects if p["slug"] == "uppsel-production"), None)
-        if project is None:
-            raise Fail("project uppsel-production not found; was the stack seeded?")
-        self.project = project["id"]
-        integrations = {i["name"]: i["id"] for i in client.get(f"/v1/projects/{self.project}/integrations")["items"]}
-        self.monitor, self.deploys = integrations["monitor"], integrations["deploys"]
+        self.project, self.monitor, self.deploys = locate(client)
 
     # Setup ---------------------------------------------------------------
 
@@ -119,14 +113,7 @@ class Showcase:
     # Analysis and engineer actions ------------------------------------------
 
     def wait(self, incident: str, revisions: int = 1) -> dict:
-        deadline = time.monotonic() + 30
-        while True:
-            analysis = self.c.get(f"/v1/incidents/{incident}")["analysis"]
-            if analysis["status"] == "succeeded" and analysis["revision_count"] >= revisions:
-                return analysis
-            if time.monotonic() > deadline:
-                raise Fail(f"analysis of {incident} not done after 30s ({analysis['status']}); is the worker running?")
-            time.sleep(0.5)
+        return wait_for_analysis(self.c, incident, revisions)
 
     def finding(self, analysis: dict, rule_id: str) -> dict | None:
         return next((f for f in analysis["latest_revision"]["findings"] if f["rule_id"] == rule_id), None)
@@ -147,25 +134,30 @@ class Showcase:
     # Stories -------------------------------------------------------------
 
     def checkout(self) -> None:
+        # Each step waits for the previous analysis, so the revisions are the
+        # same on every run: 1 from the first alert, 2 from the repeat, 3 from
+        # the manual reanalysis. Feedback belongs to one revision, so it goes on
+        # the latest, which is the one the UI shows.
         self.deploy("checkout-deploy", "checkout-api", "2.14.0", "9b2d71e", {"minutes": 47})
         self.error("checkout-err-1", "checkout-api", "CartTotalMismatch", {"minutes": 42}, count=17)
         self.error("checkout-err-2", "checkout-api", "UpstreamTimeout: payment-service", {"minutes": 41}, count=64)
         res = self.alert("checkout-alert-1", "checkout-api", "warning", "Checkout error rate above 2%",
                          "checkout-error-rate", {"minutes": 40})
         incident = res["incident_id"]
+        self.wait(incident)
         self.alert("checkout-alert-2", "checkout-api", "critical", "Checkout error rate above 10%",
                    "checkout-error-rate", {"minutes": 35})
-        analysis = self.wait(incident)
+        analysis = self.wait(incident, revisions=2)
+        if analysis["revision_count"] == 2:  # not yet reanalysed (a rerun finds 3)
+            status, out = self.c.call("POST", f"/v1/incidents/{incident}/reanalyze", self.c.s["admin"])
+            if status != 202:
+                raise Fail(f"reanalyze: HTTP {status} {out}")
+        analysis = self.wait(incident, revisions=3)
         if hyp := self.finding(analysis, "deployment_near_onset"):
             self.put(f"/v1/findings/{hyp['id']}/feedback", {"verdict": "useful"})
         if check := self.finding(analysis, "compare_by_version"):
             self.put(f"/v1/findings/{check['id']}/check", {"done": True})
-        if analysis["revision_count"] == 1:  # once: an engineer asked for a fresh analysis
-            status, out = self.c.call("POST", f"/v1/incidents/{incident}/reanalyze", self.c.s["admin"])
-            if status not in (200, 201, 202, 409):
-                raise Fail(f"reanalyze: HTTP {status} {out}")
-            self.wait(incident, revisions=2)
-        self.done("checkout-api: escalated, feedback, check done, reanalysed", incident)
+        self.done("checkout-api: escalated, reanalysed, feedback, check done", incident)
 
     def payments_late_deploy(self) -> None:
         res = self.alert("payments-alert", "payment-service", "error", "Payment authorisation failures",
