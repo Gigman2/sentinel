@@ -24,7 +24,7 @@ const usage = `usage: sentinel-api <command>
 commands:
   migrate      apply pending database migrations (reads DATABASE_URL)
   seed         create or reconcile the demo tenant (reads DATABASE_URL, SEED_* variables)
-  demo-data    fill the demo tenant with incidents to explore; waits for the worker (reads DATABASE_URL, SEED_*)
+  demo-data    fill the seeded tenant with incidents to explore; waits for the worker (reads DATABASE_URL, SEED_ORG_SLUG, SEED_ADMIN_EMAIL)
   serve        run the HTTP API (reads DATABASE_URL, HOST, PORT; default port 8080 on all interfaces)
   healthcheck  exit 0 if the local API answers /healthz (reads PORT; for container healthchecks)`
 
@@ -144,8 +144,8 @@ func seedConfig() seed.Config {
 	}
 }
 
-// runDemoData reconciles the seed (to learn its IDs), then fills it with the
-// demo incidents. Local stacks only; see internal/support/demodata.
+// runDemoData fills the seeded tenant with the demo incidents. Local stacks
+// only; see internal/support/demodata.
 func runDemoData(ctx context.Context) error {
 	dsn, err := databaseURL()
 	if err != nil {
@@ -158,12 +158,8 @@ func runDemoData(ctx context.Context) error {
 	defer pool.Close()
 
 	cfg := seedConfig()
-	res, err := seed.Seed(ctx, pool, cfg)
-	if err != nil {
-		return err
-	}
 	return demodata.Run(ctx, demodata.Config{
-		Pool: pool, Seed: res, AdminEmail: cfg.AdminEmail,
+		Pool: pool, OrgSlug: cfg.OrgSlug, AdminEmail: cfg.AdminEmail,
 		Log: func(format string, args ...any) { fmt.Printf(format+"\n", args...) },
 	})
 }

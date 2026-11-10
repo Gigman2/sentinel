@@ -16,16 +16,34 @@ import (
 
 const adminEmail = "admin@uppsel.test"
 
+// worker settings for fakeWorker.
+type worker struct {
+	// failOnce, if set, makes the first job of the incident with this
+	// fingerprint fail.
+	failOnce string
+}
+
 // fakeWorker stands in for the Python worker: it completes each due pending
 // job with a new revision holding the findings the demo data acts on. Like
 // the real one it polls, not instantly, so events sent without waiting for
 // an analysis coalesce into one job.
-func fakeWorker(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
+func fakeWorker(ctx context.Context, t *testing.T, pool *pgxpool.Pool, w worker) {
+	failed := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(150 * time.Millisecond):
+		}
+		if w.failOnce != "" && !failed {
+			tag, err := pool.Exec(ctx, `
+				UPDATE analysis_jobs SET status = 'failed', attempts = max_attempts, last_error = 'boom', finished_at = now(), updated_at = now()
+				WHERE status = 'pending' AND incident_id = (SELECT id FROM incidents WHERE fingerprint = $1)`, w.failOnce)
+			if err != nil && ctx.Err() == nil {
+				t.Errorf("fake worker: %v", err)
+				return
+			}
+			failed = tag.RowsAffected() > 0
 		}
 		_, err := pool.Exec(ctx, `
 			WITH job AS (
@@ -50,23 +68,31 @@ func fakeWorker(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
-func setup(t *testing.T) (*pgxpool.Pool, seed.Result) {
+func setup(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	pool := testutil.NewDB(t)
-	s, err := seed.Seed(context.Background(), pool, seed.Config{OrgSlug: "uppsel", OrgName: "Uppsel", AdminEmail: adminEmail})
-	if err != nil {
+	if _, err := seed.Seed(context.Background(), pool, seed.Config{OrgSlug: "uppsel", OrgName: "Uppsel", AdminEmail: adminEmail}); err != nil {
 		t.Fatal(err)
 	}
-	return pool, s
+	return pool
 }
 
-func run(t *testing.T, pool *pgxpool.Pool, s seed.Result) {
+func config(pool *pgxpool.Pool) demodata.Config {
+	return demodata.Config{Pool: pool, OrgSlug: "uppsel", AdminEmail: adminEmail, Wait: 10 * time.Second, Poll: 10 * time.Millisecond}
+}
+
+func run(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	if err := demodata.Run(context.Background(), demodata.Config{
-		Pool: pool, Seed: s, AdminEmail: adminEmail, Wait: 10 * time.Second, Poll: 10 * time.Millisecond,
-	}); err != nil {
+	if err := demodata.Run(context.Background(), config(pool)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// startWorker runs fakeWorker until the test ends.
+func startWorker(t *testing.T, pool *pgxpool.Pool, w worker) {
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	go fakeWorker(ctx, t, pool, w)
 }
 
 func query(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) string {
@@ -89,12 +115,10 @@ func snapshot(t *testing.T, pool *pgxpool.Pool) string {
 }
 
 func TestDemoDataCoversTheEngineerView(t *testing.T) {
-	pool, s := setup(t)
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-	go fakeWorker(ctx, t, pool)
+	pool := setup(t)
+	startWorker(t, pool, worker{})
 
-	run(t, pool, s)
+	run(t, pool)
 
 	incident := func(fingerprint string) string {
 		return query(t, pool, `SELECT id::text FROM incidents WHERE fingerprint = $1`, fingerprint)
@@ -149,7 +173,7 @@ func TestDemoDataCoversTheEngineerView(t *testing.T) {
 
 	// Running it again changes nothing.
 	before := snapshot(t, pool)
-	run(t, pool, s)
+	run(t, pool)
 	if after := snapshot(t, pool); after != before {
 		t.Errorf("rerun changed data:\nbefore %s\nafter  %s", before, after)
 	}
@@ -164,11 +188,74 @@ func args(sql, id string) []any {
 }
 
 func TestDemoDataWithoutAWorkerStops(t *testing.T) {
-	pool, s := setup(t)
-	err := demodata.Run(context.Background(), demodata.Config{
-		Pool: pool, Seed: s, AdminEmail: adminEmail, Wait: 200 * time.Millisecond, Poll: 10 * time.Millisecond,
-	})
-	if !errors.Is(err, demodata.ErrWorkerNotRunning) {
+	pool := setup(t)
+	c := config(pool)
+	c.Wait = 200 * time.Millisecond
+	if err := demodata.Run(context.Background(), c); !errors.Is(err, demodata.ErrWorkerNotRunning) {
 		t.Fatalf("got %v, want ErrWorkerNotRunning", err)
+	}
+}
+
+// A run that stopped partway is finished by a later one, with every event
+// where the first run placed the story, however much later it resumes.
+func TestDemoDataResumesAtTheFirstRunsTimes(t *testing.T) {
+	pool := setup(t)
+	first := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	c := config(pool)
+	c.Now, c.Wait = func() time.Time { return first }, 200*time.Millisecond
+	if err := demodata.Run(context.Background(), c); !errors.Is(err, demodata.ErrWorkerNotRunning) {
+		t.Fatalf("first run: got %v, want it to stop for want of a worker", err)
+	}
+
+	startWorker(t, pool, worker{})
+	run(t, pool) // now, an hour later
+
+	at := func(key string) time.Time {
+		var ts time.Time
+		if err := pool.QueryRow(context.Background(), `SELECT occurred_at FROM operational_events WHERE source_event_id = $1`,
+			"demo-data-"+key).Scan(&ts); err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		return ts.UTC()
+	}
+	for key, want := range map[string]time.Time{
+		"old-deploy":      first.Add(-(6*24*time.Hour + 9*time.Minute)),
+		"old-alert":       first.Add(-6 * 24 * time.Hour),
+		"payments-alert":  first.Add(-3 * time.Hour),
+		"payments-deploy": first.Add(-(3*time.Hour + 8*time.Minute)),
+	} {
+		if got := at(key); !got.Equal(want) {
+			t.Errorf("%s at %s, want %s", key, got, want)
+		}
+	}
+	if got := query(t, pool, `SELECT count(*) FROM incidents`); got != "6" {
+		t.Errorf("incidents after resuming: %s", got)
+	}
+}
+
+// A failed analysis is requeued once, and the story carries on.
+func TestDemoDataRetriesAFailedAnalysis(t *testing.T) {
+	pool := setup(t)
+	startWorker(t, pool, worker{failOnce: "search-index-lag"})
+	run(t, pool)
+	if got := query(t, pool, `SELECT string_agg(j.status || ':' || j.reason, ',' ORDER BY j.created_at) FROM analysis_jobs j
+		JOIN incidents i ON i.id = j.incident_id WHERE i.fingerprint = 'search-index-lag'`); got != "failed:incident_created,succeeded:manual_retry" {
+		t.Errorf("search jobs: %q", got)
+	}
+}
+
+func TestDemoDataSkipsADisabledIntegration(t *testing.T) {
+	pool := setup(t)
+	if _, err := pool.Exec(context.Background(), `UPDATE integrations SET enabled = false WHERE name = 'monitor'`); err != nil {
+		t.Fatal(err)
+	}
+	var logged string
+	c := config(pool)
+	c.Log = func(format string, args ...any) { logged = format }
+	if err := demodata.Run(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	if got := query(t, pool, `SELECT count(*) FROM components`); got != "3" || !strings.Contains(logged, "disabled") {
+		t.Errorf("components %s, log %q", got, logged)
 	}
 }

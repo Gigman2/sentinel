@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Gigman2/sentinel/backend/api/internal/domain"
@@ -30,26 +31,32 @@ import (
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/integrations"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/tenancy"
 	"github.com/Gigman2/sentinel/backend/api/internal/platform/httpx"
-	"github.com/Gigman2/sentinel/backend/api/internal/support/seed"
 )
 
 const environment = "production"
 
+// Analysis job statuses (analysis_jobs.status).
+const (
+	jobSucceeded = "succeeded"
+	jobFailed    = "failed"
+)
+
 // Config says where to write and how long to wait for the worker.
 type Config struct {
 	Pool *pgxpool.Pool
-	// Seed is the result of seeding the tenant the data goes into.
-	Seed seed.Result
+	// OrgSlug names the seeded organisation; the data goes into its
+	// uppsel-production project, through its monitor and deploys integrations.
+	OrgSlug string
 	// AdminEmail names the seeded admin, who records the feedback, checks
 	// and resolutions.
 	AdminEmail string
 	// Now is the clock; events are placed relative to it. Default time.Now.
 	Now func() time.Time
-	// Wait bounds each wait for an analysis. Default 2 minutes.
+	// Wait bounds each wait for an analysis. Default 5 minutes.
 	Wait time.Duration
 	// Poll is how often a wait checks. Default 500 ms.
 	Poll time.Duration
-	// Log, if set, is told about each finished story.
+	// Log, if set, is told about each finished story, or why nothing was done.
 	Log func(format string, args ...any)
 }
 
@@ -62,7 +69,7 @@ func Run(ctx context.Context, c Config) error {
 		c.Now = time.Now
 	}
 	if c.Wait == 0 {
-		c.Wait = 2 * time.Minute
+		c.Wait = 5 * time.Minute
 	}
 	if c.Poll == 0 {
 		c.Poll = 500 * time.Millisecond
@@ -70,22 +77,29 @@ func Run(ctx context.Context, c Config) error {
 	if c.Log == nil {
 		c.Log = func(string, ...any) {}
 	}
-	var adminID string
-	if err := c.Pool.QueryRow(ctx, `SELECT id::text FROM users WHERE email = $1`, c.AdminEmail).Scan(&adminID); err != nil {
-		return fmt.Errorf("demo data: find admin %s: %w", c.AdminEmail, err)
+	t, err := locate(ctx, c.Pool, c.OrgSlug, c.AdminEmail)
+	if err != nil {
+		return fmt.Errorf("demo data: %w", err)
+	}
+	if !t.monitor.Enabled || !t.deploys.Enabled {
+		c.Log("demo data: skipped, because the monitor or deploys integration is disabled")
+		return nil
+	}
+	now, err := anchor(ctx, c.Pool, t.deploys.ID, c.Now)
+	if err != nil {
+		return fmt.Errorf("demo data: %w", err)
 	}
 	r := &runner{
-		Config:      c,
-		AdminUserID: adminID,
-		ingest:      ingest.Service{Pool: c.Pool, Now: c.Now},
-		inc:         incidents.Service{Pool: c.Pool, Now: c.Now},
-		an:          analysis.Service{Pool: c.Pool},
-		fb:          feedback.Service{Pool: c.Pool, Now: c.Now},
-		ten:         tenancy.Service{DB: c.Pool},
-		integ:       integrations.Service{Pool: c.Pool},
-		now:         c.Now().UTC().Truncate(time.Second),
-		monitor:     ingest.Integration{ID: c.Seed.MonitorIntegrationID, OrganizationID: c.Seed.OrgID, ProjectID: c.Seed.ProjectID, Capability: domain.CapabilityIncidentInput, Enabled: true},
-		deploys:     ingest.Integration{ID: c.Seed.DeployIntegrationID, OrganizationID: c.Seed.OrgID, ProjectID: c.Seed.ProjectID, Capability: domain.CapabilityChangeSource, Enabled: true},
+		Config:  c,
+		tenant:  t,
+		ingest:  ingest.Service{Pool: c.Pool, Now: c.Now},
+		inc:     incidents.Service{Pool: c.Pool, Now: c.Now},
+		an:      analysis.Service{Pool: c.Pool},
+		fb:      feedback.Service{Pool: c.Pool, Now: c.Now},
+		ten:     tenancy.Service{DB: c.Pool},
+		integ:   integrations.Service{Pool: c.Pool},
+		now:     now,
+		retried: map[string]bool{},
 	}
 	if err := r.setup(ctx); err != nil {
 		return fmt.Errorf("demo data setup: %w", err)
@@ -112,15 +126,74 @@ func Run(ctx context.Context, c Config) error {
 
 type runner struct {
 	Config
-	AdminUserID      string
-	ingest           ingest.Service
-	inc              incidents.Service
-	an               analysis.Service
-	fb               feedback.Service
-	ten              tenancy.Service
-	integ            integrations.Service
-	now              time.Time
-	monitor, deploys ingest.Integration
+	tenant
+	ingest  ingest.Service
+	inc     incidents.Service
+	an      analysis.Service
+	fb      feedback.Service
+	ten     tenancy.Service
+	integ   integrations.Service
+	now     time.Time
+	retried map[string]bool // incidents whose failed analysis was requeued
+}
+
+// tenant is where the data goes, read from the database.
+type tenant struct {
+	orgID, projectID, adminID string
+	monitor, deploys          ingest.Integration
+}
+
+func locate(ctx context.Context, pool *pgxpool.Pool, orgSlug, adminEmail string) (tenant, error) {
+	var t tenant
+	err := pool.QueryRow(ctx, `
+		SELECT o.id::text, p.id::text, u.id::text
+		FROM organizations o
+		JOIN projects p ON p.organization_id = o.id AND p.slug = 'uppsel-production'
+		JOIN memberships m ON m.organization_id = o.id
+		JOIN users u ON u.id = m.user_id AND u.email = $2
+		WHERE o.slug = $1`, orgSlug, adminEmail).Scan(&t.orgID, &t.projectID, &t.adminID)
+	if err != nil {
+		return t, fmt.Errorf("find seeded tenant %s (admin %s): %w; run `sentinel-api seed` first", orgSlug, adminEmail, err)
+	}
+	for _, x := range []struct {
+		name string
+		into *ingest.Integration
+	}{{"monitor", &t.monitor}, {"deploys", &t.deploys}} {
+		in := ingest.Integration{OrganizationID: t.orgID, ProjectID: t.projectID}
+		err := pool.QueryRow(ctx, `
+			SELECT id::text, capability, enabled FROM integrations
+			WHERE project_id = $1 AND name = $2 ORDER BY created_at LIMIT 1`, t.projectID, x.name).
+			Scan(&in.ID, &in.Capability, &in.Enabled)
+		if err != nil {
+			return t, fmt.Errorf("find the %s integration: %w", x.name, err)
+		}
+		*x.into = in
+	}
+	return t, nil
+}
+
+// firstEvent is the first event Run sends, and how long before the run's
+// reference time it is placed.
+const (
+	firstEvent       = "demo-data-old-deploy"
+	firstEventBefore = 6*24*time.Hour + 9*time.Minute
+)
+
+// anchor is the reference time every event is placed relative to. A run that
+// finds events from an earlier run (one that stopped partway, say) reuses
+// that run's reference time, so the events it adds land where the first run
+// meant them to, next to the ones already stored.
+func anchor(ctx context.Context, pool *pgxpool.Pool, deploysID string, now func() time.Time) (time.Time, error) {
+	var first time.Time
+	err := pool.QueryRow(ctx, `SELECT occurred_at FROM operational_events WHERE integration_id = $1 AND source_event_id = $2`,
+		deploysID, firstEvent).Scan(&first)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return now().UTC().Truncate(time.Second), nil
+	case err != nil:
+		return time.Time{}, fmt.Errorf("find earlier demo data: %w", err)
+	}
+	return first.UTC().Add(firstEventBefore), nil
 }
 
 // Setup ---------------------------------------------------------------------
@@ -156,7 +229,7 @@ func exists(err error, codes ...string) bool {
 }
 
 func (r *runner) setup(ctx context.Context) error {
-	org, project := r.Seed.OrgID, r.Seed.ProjectID
+	org, project := r.orgID, r.projectID
 	for _, c := range components {
 		c.Environment = environment
 		if _, err := r.ten.CreateComponent(ctx, org, project, c); err != nil && !exists(err, "component_exists") {
@@ -198,20 +271,10 @@ func (r *runner) ago(d time.Duration) *time.Time {
 	return &t
 }
 
-// send ingests an event the way the webhook handler does: shape, replay,
-// times, then accept.
+// send ingests an event through the same pipeline as the webhook.
 func (r *runner) send(ctx context.Context, in ingest.Integration, e ingest.Envelope) (ingest.Result, error) {
 	e.SchemaVersion, e.Environment = "1", environment
-	if rej := ingest.ValidateShape(e); rej != nil {
-		return ingest.Result{}, rej
-	}
-	if res, found, err := r.ingest.Replay(ctx, in, e.SourceEventID); err != nil || found {
-		return res, err
-	}
-	if rej := ingest.ValidateTimes(e, r.Now()); rej != nil {
-		return ingest.Result{}, rej
-	}
-	return r.ingest.Accept(ctx, in, e)
+	return r.ingest.Ingest(ctx, in, e)
 }
 
 type alert struct {
@@ -267,24 +330,29 @@ func (r *runner) deploy(ctx context.Context, key, component, version, sha string
 // Analysis and engineer actions ------------------------------------------------
 
 // wait waits until the incident's analysis has succeeded with at least n
-// revisions.
+// revisions. A failed analysis is requeued once per incident, as an engineer
+// would with Reanalyze, so one bad job does not stop the demo data for good.
 func (r *runner) wait(ctx context.Context, incident string, n int) (analysis.View, error) {
 	deadline := time.Now().Add(r.Wait)
 	for {
-		inc, err := r.inc.Get(ctx, r.Seed.OrgID, r.AdminUserID, incident)
+		v, err := analysis.Read(ctx, r.Pool, incident, r.adminID)
 		if err != nil {
 			return analysis.View{}, err
 		}
-		v := inc.Analysis
 		switch {
-		case v.Status == "succeeded" && v.RevisionCount >= n:
+		case v.Status == jobSucceeded && v.RevisionCount >= n:
 			return v, nil
-		case v.Status == "failed":
+		case v.Status == jobFailed && !r.retried[incident]:
+			r.retried[incident] = true
+			if _, err := r.an.Reanalyze(ctx, r.orgID, incident); err != nil {
+				return v, fmt.Errorf("requeue failed analysis of %s: %w", incident, err)
+			}
+		case v.Status == jobFailed:
 			msg := ""
 			if v.LastError != nil {
 				msg = *v.LastError
 			}
-			return v, fmt.Errorf("analysis of %s failed: %s", incident, msg)
+			return v, fmt.Errorf("analysis of %s failed again: %s", incident, msg)
 		case time.Now().After(deadline):
 			return v, ErrWorkerNotRunning
 		}
@@ -313,7 +381,7 @@ func (r *runner) verdict(ctx context.Context, v analysis.View, ruleID, verdict s
 	if f == nil {
 		return nil
 	}
-	_, err := r.fb.SetVerdict(ctx, r.Seed.OrgID, r.AdminUserID, f.ID, verdict)
+	_, err := r.fb.SetVerdict(ctx, r.orgID, r.adminID, f.ID, verdict)
 	return err
 }
 
@@ -347,7 +415,7 @@ func (r *runner) notificationsManual(ctx context.Context) (string, error) {
 	if _, err := r.wait(ctx, incident, 1); err != nil {
 		return incident, err
 	}
-	_, err = r.inc.Resolve(ctx, r.Seed.OrgID, r.AdminUserID, incident,
+	_, err = r.inc.Resolve(ctx, r.orgID, r.adminID, incident,
 		"SMTP provider throttled us after the sender limit was lowered in their console. "+
 			"Limit restored; queue drained by 14:20.")
 	if errors.Is(err, incidents.ErrAlreadyResolved) {
@@ -445,7 +513,7 @@ func (r *runner) checkout(ctx context.Context) (string, error) {
 		return incident, err
 	}
 	if v.RevisionCount == 2 { // not yet reanalysed; a rerun finds 3
-		if _, err := r.an.Reanalyze(ctx, r.Seed.OrgID, incident); err != nil {
+		if _, err := r.an.Reanalyze(ctx, r.orgID, incident); err != nil {
 			return incident, err
 		}
 	}
@@ -456,7 +524,7 @@ func (r *runner) checkout(ctx context.Context) (string, error) {
 		return incident, err
 	}
 	if f := finding(v, "compare_by_version"); f != nil {
-		if _, err := r.fb.SetDone(ctx, r.Seed.OrgID, r.AdminUserID, f.ID, true); err != nil {
+		if _, err := r.fb.SetDone(ctx, r.orgID, r.adminID, f.ID, true); err != nil {
 			return incident, err
 		}
 	}

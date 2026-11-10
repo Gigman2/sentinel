@@ -57,7 +57,7 @@ Each run registers its own component (`demo-<id>`), so runs never see each other
 
 `make up` and `make run` fill the demo tenant with incidents to explore, so every part of the engineer view has something in it: severities from info to critical, a repeat alert that escalates, deployments and errors as evidence, revision histories (from late evidence, a repeat alert and a manual reanalysis), findings marked useful and incorrect, a next check marked done, incidents resolved by their monitor and by an engineer with a cause note, an unmatched resolution on the Alerts page, registered dependencies two levels deep, and an incident from last week for the time filters.
 
-They are written by `sentinel-api demo-data` through the same services the API uses, and analysed by the real worker, so they appear over the first half minute or so after start. Event IDs are fixed, so restarting adds nothing. Set `SEED_DEMO_DATA=0` to start with an empty tenant. An analysis that is waiting or running needs the worker stopped (below); a failed one cannot be produced this way.
+They are written by `sentinel-api demo-data` through the same services the API uses, and analysed by the real worker, so they appear over the first half minute or so after start. Event IDs are fixed, so restarting adds nothing. Set `SEED_DEMO_DATA=0` (or `false`, `no`, `off`) to start with an empty tenant. If a run stops partway (the worker was down, say), the next start finishes it with the same timings. An analysis that is waiting or running needs the worker stopped (below); a failed one cannot be produced this way.
 
 ### Send an event yourself
 

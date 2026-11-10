@@ -1,12 +1,15 @@
 package ingest_test
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
 	"time"
 
+	"github.com/Gigman2/sentinel/backend/api/internal/domain"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/ingest"
+	"github.com/Gigman2/sentinel/backend/api/internal/support/seed"
 	"github.com/Gigman2/sentinel/backend/api/internal/support/testutil"
 )
 
@@ -107,5 +110,21 @@ func TestLateEventEnqueuesCoalesced(t *testing.T) {
 	testutil.PostJSON(t, h, ingestPath(s.MonitorIntegrationID), s.MonitorToken, other)
 	if n := count(`SELECT count(*) FROM analysis_jobs`); n != 2 {
 		t.Fatalf("total jobs: %d", n)
+	}
+}
+
+// Ingest refuses a disabled integration before looking at the event, even
+// for callers that skip the webhook handler's own check.
+func TestIngestRefusesADisabledIntegration(t *testing.T) {
+	pool := testutil.NewDB(t)
+	s, err := seed.Seed(context.Background(), pool, seed.Config{OrgSlug: "uppsel", OrgName: "Uppsel", AdminEmail: "admin@uppsel.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := ingest.Service{Pool: pool, Now: time.Now}
+	in := ingest.Integration{ID: s.MonitorIntegrationID, OrganizationID: s.OrgID, ProjectID: s.ProjectID,
+		Capability: domain.CapabilityIncidentInput, Enabled: false}
+	if _, err := svc.Ingest(context.Background(), in, ingest.Envelope{}); err != ingest.ErrDisabled {
+		t.Fatalf("got %v, want ErrDisabled", err)
 	}
 }

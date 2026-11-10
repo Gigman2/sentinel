@@ -70,6 +70,30 @@ func (s Service) Replay(ctx context.Context, in Integration, sourceEventID strin
 	return r, true, nil
 }
 
+// ErrDisabled is returned by Ingest for a disabled integration.
+var ErrDisabled = &Rejection{Status: http.StatusForbidden, Code: "integration_disabled", Message: "this integration is disabled"}
+
+// Ingest takes one decoded event from an authenticated integration through
+// the whole pipeline: enabled → payload shape → replay (a resend is answered
+// from storage before anything else is checked) → timestamps → Accept. A
+// client-side problem is returned as a *Rejection. The webhook handler and
+// the local demo data both use it, so they cannot drift apart.
+func (s Service) Ingest(ctx context.Context, in Integration, e Envelope) (Result, error) {
+	if !in.Enabled {
+		return Result{}, ErrDisabled
+	}
+	if rej := ValidateShape(e); rej != nil {
+		return Result{}, rej
+	}
+	if res, found, err := s.Replay(ctx, in, e.SourceEventID); err != nil || found {
+		return res, err
+	}
+	if rej := ValidateTimes(e, s.Now()); rej != nil {
+		return Result{}, rej
+	}
+	return s.Accept(ctx, in, e)
+}
+
 // allowed reports whether an integration capability may send an event type.
 func allowed(capability, eventType string) bool {
 	switch capability {

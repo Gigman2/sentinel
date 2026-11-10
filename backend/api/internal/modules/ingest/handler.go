@@ -64,7 +64,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !in.Enabled {
-		fail(&httpx.Error{Status: http.StatusForbidden, Code: "integration_disabled", Message: "this integration is disabled"})
+		fail(ErrDisabled)
 		return
 	}
 	if !h.Limiter.Allow(in.ID) {
@@ -78,27 +78,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(rej)
 		return
 	}
-	if rej := ValidateShape(env); rej != nil {
-		fail(rej)
-		return
-	}
-
-	// A resend is answered from storage before anything else is checked or applied.
-	if res, found, err := h.Service.Replay(ctx, in, env.SourceEventID); err != nil {
-		internal(err)
-		return
-	} else if found {
-		outcome, eventID = "replayed", res.EventID
-		httpx.WriteJSON(w, http.StatusOK, res)
-		return
-	}
-
-	if rej := ValidateTimes(env, h.Service.Now()); rej != nil {
-		fail(rej)
-		return
-	}
-
-	res, err := h.Service.Accept(ctx, in, env)
+	res, err := h.Service.Ingest(ctx, in, env)
 	var rej *Rejection
 	switch {
 	case errors.As(err, &rej):

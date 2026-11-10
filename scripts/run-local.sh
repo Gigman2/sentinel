@@ -61,9 +61,14 @@ pids+=($!)
 
 echo "==> API on http://$HOST:$PORT, worker running. Ctrl-C to stop."
 
-# Demo incidents to explore (local only; SEED_DEMO_DATA=0 skips them). It
+# Demo incidents to explore (local only; SEED_DEMO_DATA=0, false, no, off or
+# empty skips them). It
 # waits for the worker between steps; a rerun changes nothing.
-if [[ "${SEED_DEMO_DATA:-1}" != 0 ]]; then
+case "$(printf '%s' "${SEED_DEMO_DATA-1}" | tr '[:upper:]' '[:lower:]')" in
+  0 | false | no | off | "") demo_data=0 ;;
+  *) demo_data=1 ;;
+esac
+if [[ $demo_data == 1 ]]; then
   echo "==> adding demo incidents in the background (SEED_DEMO_DATA=0 to skip)"
   "$api_bin" demo-data &
   pids+=($!)
