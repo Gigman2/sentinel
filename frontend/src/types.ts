@@ -68,12 +68,32 @@ export interface Signal {
   source_url: string | null;
 }
 
+export type Verdict = "useful" | "incorrect";
+
+/** Engineers' verdicts on a finding; `mine` is the viewer's own. */
+export interface FindingFeedback {
+  useful: number;
+  incorrect: number;
+  mine: Verdict | null;
+}
+
+/** Whether a next check has been done, and by whom. */
+export interface CheckStatus {
+  done: boolean;
+  done_by: { id: string; display_name: string } | null;
+  done_at: string | null;
+}
+
 export interface Finding {
+  id: string;
   kind: FindingKind;
   rule_id: string;
   text: string;
   limitations: string | null;
   evidence_ids: string[];
+  feedback: FindingFeedback;
+  /** Set only for next_check findings. */
+  check: CheckStatus | null;
 }
 
 export interface SummarySegment {

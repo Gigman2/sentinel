@@ -22,7 +22,8 @@ func (h Handlers) Get(w http.ResponseWriter, r *http.Request) {
 		writeNotFound(w, r)
 		return
 	}
-	inc, err := h.Service.Get(r.Context(), auth.PrincipalFrom(r.Context()).OrganizationID, id)
+	p := auth.PrincipalFrom(r.Context())
+	inc, err := h.Service.Get(r.Context(), p.OrganizationID, p.UserID, id)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeNotFound(w, r)

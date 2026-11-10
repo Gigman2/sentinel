@@ -11,6 +11,7 @@ import (
 
 	"github.com/Gigman2/sentinel/backend/api/internal/auth"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/analysis"
+	"github.com/Gigman2/sentinel/backend/api/internal/modules/feedback"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/incidents"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/ingest"
 	"github.com/Gigman2/sentinel/backend/api/internal/modules/integrations"
@@ -95,6 +96,11 @@ func New(d Deps) http.Handler {
 	mux.Handle("POST /v1/incidents/{incidentId}/reanalyze", member(an.Reanalyze))
 	mux.Handle("GET /v1/incidents/{incidentId}/revisions", member(an.Revisions))
 	mux.Handle("GET /v1/incidents/{incidentId}/revisions/{n}", member(an.Revision))
+
+	fb := feedback.Handlers{Service: feedback.Service{Pool: d.Pool, Now: d.Now}, Log: d.Logger}
+	mux.Handle("PUT /v1/findings/{findingId}/feedback", member(fb.PutFeedback))
+	mux.Handle("DELETE /v1/findings/{findingId}/feedback", member(fb.DeleteFeedback))
+	mux.Handle("PUT /v1/findings/{findingId}/check", member(fb.PutCheck))
 
 	return httpx.RequestID(mux)
 }

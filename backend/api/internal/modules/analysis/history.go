@@ -160,8 +160,9 @@ func diffRules(prev, next []RuleRef) Changes {
 	return c
 }
 
-// RevisionByNumber returns revision n of an incident visible to orgID.
-func (s Service) RevisionByNumber(ctx context.Context, orgID, incidentID string, n int) (Revision, error) {
+// RevisionByNumber returns revision n of an incident visible to orgID, with
+// viewerID's own feedback.
+func (s Service) RevisionByNumber(ctx context.Context, orgID, viewerID, incidentID string, n int) (Revision, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return Revision{}, err
@@ -180,5 +181,5 @@ func (s Service) RevisionByNumber(ctx context.Context, orgID, incidentID string,
 	if err != nil {
 		return Revision{}, fmt.Errorf("read revision: %w", err)
 	}
-	return withFindings(ctx, tx, row)
+	return withFindings(ctx, tx, row, viewerID)
 }

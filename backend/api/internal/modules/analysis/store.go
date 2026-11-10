@@ -179,23 +179,70 @@ func revisionSeenEvents(ctx context.Context, q database.DBTX, incidentID string)
 }
 
 // revisionFindings returns a revision's findings by ordinal, each with its
-// cited event IDs (oldest event first; empty, never NULL).
-func revisionFindings(ctx context.Context, q database.DBTX, revisionID string) ([]Finding, error) {
+// cited event IDs (oldest event first; empty, never NULL), its feedback
+// counts and viewerID's own verdict, and, for next checks, whether they are
+// done.
+func revisionFindings(ctx context.Context, q database.DBTX, revisionID, viewerID string) ([]Finding, error) {
 	rows, err := q.Query(ctx, `
-		SELECT f.kind, f.rule_id, f.text, f.limitations,
-		       COALESCE(array_agg(e.id::text ORDER BY e.occurred_at, e.id) FILTER (WHERE e.id IS NOT NULL), '{}')
+		SELECT f.id::text, f.kind, f.rule_id, f.text, f.limitations,
+		       COALESCE((SELECT array_agg(e.id::text ORDER BY e.occurred_at, e.id)
+		                 FROM finding_evidence fe JOIN operational_events e ON e.id = fe.event_id
+		                 WHERE fe.finding_id = f.id), '{}'),
+		       fb.useful, fb.incorrect, fb.mine,
+		       cs.done_at, u.id::text, u.display_name
 		FROM findings f
-		LEFT JOIN finding_evidence fe ON fe.finding_id = f.id
-		LEFT JOIN operational_events e ON e.id = fe.event_id
+		CROSS JOIN LATERAL (`+feedbackOf("f.id", "$2")+`) fb
+		LEFT JOIN next_check_status cs ON cs.finding_id = f.id
+		LEFT JOIN users u ON u.id = cs.done_by_user_id
 		WHERE f.revision_id = $1
-		GROUP BY f.id, f.ordinal
-		ORDER BY f.ordinal`, revisionID)
+		ORDER BY f.ordinal`, revisionID, viewerID)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Finding, error) {
-		var f Finding
-		err := row.Scan(&f.Kind, &f.RuleID, &f.Text, &f.Limitations, &f.EvidenceIDs)
+		var (
+			f              Finding
+			doneAt         *time.Time
+			doneBy, byName *string
+		)
+		err := row.Scan(&f.ID, &f.Kind, &f.RuleID, &f.Text, &f.Limitations, &f.EvidenceIDs,
+			&f.Feedback.Useful, &f.Feedback.Incorrect, &f.Feedback.Mine, &doneAt, &doneBy, &byName)
+		if f.Kind == "next_check" {
+			f.Check = CheckFrom(doneAt, doneBy, byName)
+		}
 		return f, err
 	})
+}
+
+// feedbackOf is the one definition of a finding's feedback: one pass over
+// its rows, counting each verdict and picking the viewer's own. finding is a
+// SQL expression for the finding ID and viewer a placeholder for the user
+// ID (an empty viewer matches no one).
+func feedbackOf(finding, viewer string) string {
+	return `SELECT count(*) FILTER (WHERE verdict = 'useful')::int AS useful,
+	               count(*) FILTER (WHERE verdict = 'incorrect')::int AS incorrect,
+	               max(verdict) FILTER (WHERE user_id = NULLIF(` + viewer + `, '')::uuid) AS mine
+	        FROM finding_feedback WHERE finding_id = ` + finding
+}
+
+// FeedbackFor returns one finding's feedback as viewerID sees it, using the
+// same definition as the read model.
+func FeedbackFor(ctx context.Context, q database.DBTX, findingID, viewerID string) (Feedback, error) {
+	var fb Feedback
+	err := q.QueryRow(ctx, feedbackOf("$1::uuid", "$2"), findingID, viewerID).Scan(&fb.Useful, &fb.Incorrect, &fb.Mine)
+	return fb, err
+}
+
+// CheckFrom builds a next check's status from its next_check_status row
+// (all nil when it has none).
+func CheckFrom(doneAt *time.Time, doneBy, byName *string) *Check {
+	c := &Check{}
+	if doneAt != nil {
+		t := doneAt.UTC()
+		c.Done, c.DoneAt = true, &t
+		if doneBy != nil && byName != nil {
+			c.DoneBy = &User{ID: *doneBy, DisplayName: *byName}
+		}
+	}
+	return c
 }

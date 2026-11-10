@@ -1,7 +1,7 @@
 import { KIND_GROUP } from "../labels";
 import type { Finding, TimelineItem } from "../types";
 import { Dot } from "./Dot";
-import { FindingRow } from "./FindingRow";
+import { FindingRow, type SavedPatch } from "./FindingRow";
 
 const TONE: Record<string, string> = {
   observation: "var(--accent)",
@@ -17,18 +17,20 @@ export function Findings({
   events,
   layout,
   onCite,
+  onSaved,
 }: {
   findings: Finding[];
   events: Map<string, TimelineItem>;
   layout: "grouped" | "stream";
   onCite: (id: string) => void;
+  onSaved: (findingId: string, patch: SavedPatch) => void;
 }) {
   if (layout === "stream") {
     return (
       <div className="fgroup">
         <ul className="flist">
-          {findings.map((f, i) => (
-            <FindingRow key={i} finding={f} tag={KIND_GROUP.find((g) => g.kind === f.kind)!.tag} events={events} onCite={onCite} />
+          {findings.map((f) => (
+            <FindingRow key={f.id} finding={f} tag={KIND_GROUP.find((g) => g.kind === f.kind)!.tag} events={events} onCite={onCite} onSaved={onSaved} />
           ))}
         </ul>
       </div>
@@ -48,8 +50,8 @@ export function Findings({
               {g.hint && <span className="muted small">{g.hint}</span>}
             </div>
             <ul className="flist">
-              {items.map((f, i) => (
-                <FindingRow key={i} finding={f} tag={g.kind === "next_check" ? null : g.tag} events={events} onCite={onCite} />
+              {items.map((f) => (
+                <FindingRow key={f.id} finding={f} tag={g.kind === "next_check" ? null : g.tag} events={events} onCite={onCite} onSaved={onSaved} />
               ))}
             </ul>
           </section>
