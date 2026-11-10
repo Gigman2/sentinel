@@ -15,6 +15,7 @@ import (
 
 	"github.com/Gigman2/sentinel/backend/api/internal/platform/database"
 	"github.com/Gigman2/sentinel/backend/api/internal/server"
+	"github.com/Gigman2/sentinel/backend/api/internal/support/demodata"
 	"github.com/Gigman2/sentinel/backend/api/internal/support/seed"
 )
 
@@ -23,6 +24,7 @@ const usage = `usage: sentinel-api <command>
 commands:
   migrate      apply pending database migrations (reads DATABASE_URL)
   seed         create or reconcile the demo tenant (reads DATABASE_URL, SEED_* variables)
+  demo-data    fill the demo tenant with incidents to explore; waits for the worker (reads DATABASE_URL, SEED_*)
   serve        run the HTTP API (reads DATABASE_URL, HOST, PORT; default port 8080 on all interfaces)
   healthcheck  exit 0 if the local API answers /healthz (reads PORT; for container healthchecks)`
 
@@ -40,6 +42,8 @@ func main() {
 		err = runMigrate(ctx)
 	case "seed":
 		err = runSeed(ctx)
+	case "demo-data":
+		err = runDemoData(ctx)
 	case "serve":
 		err = runServe(ctx)
 	case "healthcheck":
@@ -110,14 +114,7 @@ func runSeed(ctx context.Context) error {
 	}
 	defer pool.Close()
 
-	res, err := seed.Seed(ctx, pool, seed.Config{
-		OrgSlug:      getenv("SEED_ORG_SLUG", "uppsel"),
-		OrgName:      getenv("SEED_ORG_NAME", "Uppsel"),
-		AdminEmail:   getenv("SEED_ADMIN_EMAIL", "admin@uppsel.test"),
-		AdminToken:   os.Getenv("SEED_ADMIN_TOKEN"),
-		MonitorToken: os.Getenv("SEED_MONITOR_TOKEN"),
-		DeployToken:  os.Getenv("SEED_DEPLOY_TOKEN"),
-	})
+	res, err := seed.Seed(ctx, pool, seedConfig())
 	if err != nil {
 		return err
 	}
@@ -134,6 +131,41 @@ func runSeed(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func seedConfig() seed.Config {
+	return seed.Config{
+		OrgSlug:      getenv("SEED_ORG_SLUG", "uppsel"),
+		OrgName:      getenv("SEED_ORG_NAME", "Uppsel"),
+		AdminEmail:   getenv("SEED_ADMIN_EMAIL", "admin@uppsel.test"),
+		AdminToken:   os.Getenv("SEED_ADMIN_TOKEN"),
+		MonitorToken: os.Getenv("SEED_MONITOR_TOKEN"),
+		DeployToken:  os.Getenv("SEED_DEPLOY_TOKEN"),
+	}
+}
+
+// runDemoData reconciles the seed (to learn its IDs), then fills it with the
+// demo incidents. Local stacks only; see internal/support/demodata.
+func runDemoData(ctx context.Context) error {
+	dsn, err := databaseURL()
+	if err != nil {
+		return err
+	}
+	pool, err := database.Open(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	cfg := seedConfig()
+	res, err := seed.Seed(ctx, pool, cfg)
+	if err != nil {
+		return err
+	}
+	return demodata.Run(ctx, demodata.Config{
+		Pool: pool, Seed: res, AdminEmail: cfg.AdminEmail,
+		Log: func(format string, args ...any) { fmt.Printf(format+"\n", args...) },
+	})
 }
 
 func runServe(ctx context.Context) error {

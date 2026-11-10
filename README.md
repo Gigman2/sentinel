@@ -28,9 +28,8 @@ An alert opens an incident for its component, or joins the one already open. The
 Needs Docker with Compose 2.24 or later, and Python 3 for the demo script.
 
 ```sh
-make up      # build and start PostgreSQL, the API, the worker and the UI
+make up        # build and start PostgreSQL, the API, the worker and the UI, with demo incidents
 make demo      # send four demo scenarios through the API; each prints PASS or FAIL
-make showcase  # fill the UI with varied incidents to explore
 ```
 
 Then open <http://127.0.0.1:5173> and sign in with `SEED_ADMIN_TOKEN` from `.env`. `make up` creates `.env` from `.env.example` the first time; its tokens are fixed demo values for this local stack only. If you already have a `.env` without them, `make up` stops and prints the lines to add.
@@ -54,9 +53,11 @@ Every port binds to `127.0.0.1` only. Move them with `SENTINEL_UI_PORT`, `SENTIN
 
 Each run registers its own component (`demo-<id>`), so runs never see each other's events. Each scenario prints the timeline, the findings and a link to the incident in the UI. The demo calls `SENTINEL_URL` if set, otherwise the API on `SENTINEL_API_PORT`, then `PORT` (for `make run`), then 8080.
 
-### The showcase
+### The demo incidents
 
-`make showcase` (`python3 scripts/showcase.py`) adds components, mappings and dependencies next to the seeded ones, then sends a set of incidents that between them show every part of the engineer view: severities from info to critical, a repeat alert that escalates, deployments and errors as evidence, a revision history after late evidence and after a manual reanalysis, findings marked useful and incorrect, a next check marked done, incidents resolved by their monitor and by an engineer with a cause note, an unmatched resolution on the Alerts page, and an incident from last week for the time filters. Event IDs are fixed, so running it again changes nothing. An analysis that is waiting or running needs the worker stopped (below); a failed analysis cannot be produced through the API.
+`make up` and `make run` fill the demo tenant with incidents to explore, so every part of the engineer view has something in it: severities from info to critical, a repeat alert that escalates, deployments and errors as evidence, revision histories (from late evidence, a repeat alert and a manual reanalysis), findings marked useful and incorrect, a next check marked done, incidents resolved by their monitor and by an engineer with a cause note, an unmatched resolution on the Alerts page, registered dependencies two levels deep, and an incident from last week for the time filters.
+
+They are written by `sentinel-api demo-data` through the same services the API uses, and analysed by the real worker, so they appear over the first half minute or so after start. Event IDs are fixed, so restarting adds nothing. Set `SEED_DEMO_DATA=0` to start with an empty tenant. An analysis that is waiting or running needs the worker stopped (below); a failed one cannot be produced this way.
 
 ### Send an event yourself
 

@@ -35,6 +35,8 @@ services:
       DATABASE_URL: postgres://sentinel:sentinel@postgres:5432/sentinel?sslmode=disable
       HOST: ""
       PORT: "8080"
+      # Demo incidents to explore, added after the seed; 0 skips them.
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-1}
     ports:
       - "127.0.0.1:${SENTINEL_API_PORT:-8080}:8080"
     # Health is checked by the image's HEALTHCHECK (backend/api/Dockerfile).

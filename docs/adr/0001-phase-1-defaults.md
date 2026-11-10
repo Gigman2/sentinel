@@ -55,6 +55,9 @@ The Phase 1 scope (`docs/scope/Sentinel_Phase_1_Core_Investigation.md`) leaves m
 - **Demo tokens:** `.env.example` holds fixed, clearly labelled demo tokens so `make up && make demo` works with no setup. They are for the local stack only.
   *Revisit when* any non-local deployment exists: it must generate its own.
 
+- **Demo incidents:** `make up` and `make run` run `sentinel-api demo-data` after the seed, filling the demo tenant with incidents that exercise every part of the UI. It is on by default for these local stacks (`SEED_DEMO_DATA=0` turns it off); the `seed` command and the tests never add it.
+  *Revisit when* any non-local deployment exists: it must not run there.
+
 ### Front end
 
 - **React + Vite, served by nginx:** the engineer view is a static build. nginx serves it with a strict same-origin Content-Security-Policy and proxies `/v1` and `/healthz` to the API. `index.html` and unhashed files are revalidated on every load (`no-cache`), and hashed `/assets/` files are cached for a year (`immutable`).
