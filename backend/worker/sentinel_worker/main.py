@@ -36,16 +36,16 @@ def process_one(conn: psycopg.Connection, analyze_fn: AnalyzeFn = rules.analyze)
         return False
     fields = {"job_id": job.id, "incident_id": job.incident_id, "attempts": job.attempts}
     try:
-        # Each step is recorded before it runs, so a failure leaves the job
-        # at the step that failed. A lost lease stops the job here.
+        # Each step is recorded before it runs (the lease already set
+        # collect_evidence), so a failure leaves the job at the step that
+        # failed. A lost lease stops the job here.
         revision = None
-        if store.set_step(conn, job, "collect_evidence"):
-            context = store.load_context(conn, job.incident_id)
-            if store.set_step(conn, job, "draft_findings"):
-                findings = analyze_fn(context)
-                segments = summary.summarize(context, findings)
-                if store.set_step(conn, job, "save_revision"):
-                    revision = store.write_revision(conn, job, findings, [e.id for e in context.events], segments)
+        context = store.load_context(conn, job.incident_id)
+        if store.set_step(conn, job, "draft_findings"):
+            findings = analyze_fn(context)
+            segments = summary.summarize(context, findings)
+            if store.set_step(conn, job, "save_revision"):
+                revision = store.write_revision(conn, job, findings, [e.id for e in context.events], segments)
     except psycopg.OperationalError:
         raise
     except Exception as error:  # noqa: BLE001 — any rule or data error is recorded on the job

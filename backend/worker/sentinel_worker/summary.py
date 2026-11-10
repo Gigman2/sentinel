@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Literal, TypedDict
 
 from sentinel_worker.models import EvidenceEvent, Finding, IncidentContext
+from sentinel_worker.rules import opening_trigger
 
 
 class Segment(TypedDict):
@@ -57,8 +58,8 @@ def summarize(ctx: IncidentContext, findings: list[Finding]) -> list[Segment]:
     if trigger is None:
         return []
     out = _Builder()
-    cited = [events[i] for i in trigger.evidence_ids if i in events]
-    first = min(cited, key=lambda e: (e.occurred_at, e.id)) if cited else None
+    # The same alert the trigger finding names, chosen among the events it cites.
+    first = opening_trigger([events[i] for i in trigger.evidence_ids if i in events])
     if first is not None and first.summary:
         out.text(f"The {ctx.component_slug} alert '{first.summary}' first fired at ")
     else:

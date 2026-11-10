@@ -227,7 +227,13 @@ export function IncidentDetail({ id }: { id: string }) {
             </div>
           )}
 
-          <Summary revision={rev} status={old ? "succeeded" : incident.analysis.status} resolved={resolved} />
+          <Summary
+            revision={rev}
+            status={incident.analysis.status}
+            step={incident.analysis.step}
+            resolved={resolved}
+            loadingOld={old && !old.revision ? { n: old.n, error: old.error } : null}
+          />
 
           <section className="block" aria-labelledby="findings-h">
             <div className="block-head">

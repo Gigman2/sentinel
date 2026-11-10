@@ -67,12 +67,12 @@ def test_stale_worker_cannot_write(conn, seeded):
     expire_lease(conn, stale.id)
     fresh = store.lease_job(conn)
 
-    assert store.write_revision(conn, stale, FINDINGS, ()) is None
+    assert store.write_revision(conn, stale, FINDINGS, (), []) is None
     assert conn.execute("SELECT count(*) FROM analysis_revisions").fetchone()[0] == 0
     store.fail_job(conn, stale, RuntimeError("late"))  # also a no-op
     assert job_row(conn, stale.id)["status"] == "running"
 
-    assert store.write_revision(conn, fresh, FINDINGS, ()) is not None
+    assert store.write_revision(conn, fresh, FINDINGS, (), []) is not None
     assert conn.execute("SELECT count(*) FROM analysis_revisions WHERE incident_id = %s", (incident,)).fetchone()[0] == 1
 
 
@@ -82,9 +82,9 @@ def test_write_revision_idempotent_per_job(conn, seeded):
     job = store.lease_job(conn)
     findings = [Finding("observation", "trigger_alert", "An alert fired.", (alert,)), *FINDINGS[1:]]
 
-    revision = store.write_revision(conn, job, findings, [alert, alert])
+    revision = store.write_revision(conn, job, findings, [alert, alert], [])
     assert revision is not None
-    assert store.write_revision(conn, job, findings, [alert, alert]) is None
+    assert store.write_revision(conn, job, findings, [alert, alert], []) is None
 
     row = job_row(conn, job.id)
     assert row["status"] == "succeeded" and row["lease_token"] is None and row["lease_expires_at"] is None
@@ -99,9 +99,9 @@ def test_write_revision_idempotent_per_job(conn, seeded):
 
 def test_second_revision_increments(conn, seeded):
     incident = make_simple_incident(conn, seeded)
-    store.write_revision(conn, store.lease_job(conn), FINDINGS, ())
+    store.write_revision(conn, store.lease_job(conn), FINDINGS, (), [])
     conn.execute("INSERT INTO analysis_jobs (incident_id, reason) VALUES (%s, 'late_event')", (incident,))
-    store.write_revision(conn, store.lease_job(conn), FINDINGS, ())
+    store.write_revision(conn, store.lease_job(conn), FINDINGS, (), [])
 
     numbers = [r[0] for r in conn.execute(
         "SELECT revision_number FROM analysis_revisions WHERE incident_id = %s ORDER BY revision_number", (incident,))]
@@ -205,7 +205,7 @@ def test_started_and_finished_at(conn, seeded):
     row = job_row(conn, third.id)
     assert row["started_at"] == started and row["finished_at"] is None
 
-    store.write_revision(conn, third, [Finding("unknown", "no_error_evidence", "None.", ())], ())
+    store.write_revision(conn, third, [Finding("unknown", "no_error_evidence", "None.", ())], (), [])
     row = job_row(conn, third.id)
     assert row["status"] == "succeeded" and row["finished_at"] is not None and row["finished_at"] >= started
 
@@ -241,3 +241,15 @@ def test_set_step_is_lease_guarded(conn, seeded):
     assert store.set_step(conn, fresh, "draft_findings") is True
     with pytest.raises(ValueError):
         store.set_step(conn, fresh, "nap")
+
+
+def test_retry_lease_restarts_at_collect_evidence(conn, seeded):
+    make_simple_incident(conn, seeded)
+    first = store.lease_job(conn)
+    assert job_row(conn, first.id)["step"] == "collect_evidence"
+    assert store.set_step(conn, first, "draft_findings")
+    before = job_row(conn, first.id)["step_started_at"]
+    expire_lease(conn, first.id)  # the worker died while drafting
+    store.lease_job(conn)
+    row = job_row(conn, first.id)
+    assert row["status"] == "running" and row["step"] == "collect_evidence" and row["step_started_at"] >= before

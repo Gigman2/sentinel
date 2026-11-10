@@ -95,3 +95,16 @@ def test_only_from_findings():
 def test_no_trigger_observation_gives_no_summary():
     ctx = reference()
     assert summarize(ctx, [f for f in analyze(ctx) if f.rule_id != "trigger_alert"]) == []
+
+
+def test_names_the_same_alert_as_the_finding():
+    """A repeat alert that occurred before the opening alert (out-of-order
+    delivery) is not quoted; the finding names the opening one, and so does
+    the summary."""
+    early_repeat = trigger("alert-0", -1, summary="Checkout latency high", reason="repeat_trigger")
+    ctx = make_ctx([early_repeat, trigger()])
+    findings = analyze(ctx)
+    opening = next(f for f in findings if f.rule_id == "trigger_alert")
+    assert "'Payment errors affecting checkout'" in opening.text
+    assert "'Payment errors affecting checkout'" in text(summarize(ctx, findings))
+    assert "Checkout latency high" not in text(summarize(ctx, findings))

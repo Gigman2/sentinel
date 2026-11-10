@@ -7,7 +7,9 @@ const META: Record<StepState, string> = { done: "done", run: "running", wait: "q
 
 /** Each step's state for the newest job. */
 function stepStates(a: Analysis): StepState[] {
-  const at = a.step ? STEPS.findIndex((s) => s.step === a.step) : -1;
+  // A running job always has a step; if none is recorded yet (an older
+  // worker), it is on the first one.
+  const at = a.step ? STEPS.findIndex((s) => s.step === a.step) : a.status === "running" ? 0 : -1;
   const here: StepState = a.status === "failed" ? "fail" : a.status === "pending" ? "retry" : "run";
   return STEPS.map((_, i) => (at < 0 ? "wait" : i < at ? "done" : i === at ? here : "wait"));
 }

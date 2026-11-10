@@ -47,7 +47,9 @@ def lease_job(conn: psycopg.Connection, lease_seconds: int = 60) -> Job | None:
     In one transaction: first fail running jobs whose lease expired on their
     last attempt (their worker died every time), then take one pending job
     that is due, or a running job whose lease expired with attempts left.
-    started_at records the first lease and is kept on later ones.
+    started_at records the first lease and is kept on later ones. Every
+    lease starts the attempt at collect_evidence, so a retry never shows
+    the step its previous attempt reached.
     """
     with conn.transaction():
         conn.execute(
@@ -60,7 +62,8 @@ def lease_job(conn: psycopg.Connection, lease_seconds: int = 60) -> Job | None:
             """UPDATE analysis_jobs
                SET status = 'running', attempts = attempts + 1, lease_token = gen_random_uuid(),
                    lease_expires_at = now() + make_interval(secs => %s),
-                   started_at = COALESCE(started_at, now()), updated_at = now()
+                   started_at = COALESCE(started_at, now()),
+                   step = 'collect_evidence', step_started_at = now(), updated_at = now()
                WHERE id = (
                    SELECT id FROM analysis_jobs
                    WHERE (status = 'pending' AND next_attempt_at <= now())
@@ -110,7 +113,7 @@ def set_step(conn: psycopg.Connection, job: Job, step: str) -> bool:
 
 
 def write_revision(conn: psycopg.Connection, job: Job, findings: list[Finding], seen: Sequence[str],
-                   summary: Sequence[Segment] = ()) -> str | None:
+                   summary: Sequence[Segment]) -> str | None:
     """Mark the job succeeded and store its findings and summary as the
     incident's next revision, with the IDs of the events the analysis read
     (`seen`), in one transaction. Returns the revision ID, or None if the
