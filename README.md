@@ -29,7 +29,8 @@ Needs Docker with Compose 2.24 or later, and Python 3 for the demo script.
 
 ```sh
 make up      # build and start PostgreSQL, the API, the worker and the UI
-make demo    # send four demo scenarios through the API; each prints PASS or FAIL
+make demo      # send four demo scenarios through the API; each prints PASS or FAIL
+make showcase  # fill the UI with varied incidents to explore
 ```
 
 Then open <http://127.0.0.1:5173> and sign in with `SEED_ADMIN_TOKEN` from `.env`. `make up` creates `.env` from `.env.example` the first time; its tokens are fixed demo values for this local stack only. If you already have a `.env` without them, `make up` stops and prints the lines to add.
@@ -52,6 +53,10 @@ Every port binds to `127.0.0.1` only. Move them with `SENTINEL_UI_PORT`, `SENTIN
 - `duplicate`: one alert sent twice. The second send gets the first event back.
 
 Each run registers its own component (`demo-<id>`), so runs never see each other's events. Each scenario prints the timeline, the findings and a link to the incident in the UI. The demo calls `SENTINEL_URL` if set, otherwise the API on `SENTINEL_API_PORT`, then `PORT` (for `make run`), then 8080.
+
+### The showcase
+
+`make showcase` (`python3 scripts/showcase.py`) adds components, mappings and dependencies next to the seeded ones, then sends a set of incidents that between them show every part of the engineer view: severities from info to critical, a repeat alert that escalates, deployments and errors as evidence, a revision history after late evidence and after a manual reanalysis, findings marked useful and incorrect, a next check marked done, incidents resolved by their monitor and by an engineer with a cause note, an unmatched resolution on the Alerts page, and an incident from last week for the time filters. Event IDs are fixed, so running it again changes nothing. An analysis that is waiting or running needs the worker stopped (below); a failed analysis cannot be produced through the API.
 
 ### Send an event yourself
 
