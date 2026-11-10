@@ -109,18 +109,40 @@ def iso(t: dt.datetime) -> str:
     return t.astimezone(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def locate(client: Client) -> tuple[str, str, str]:
+    """The seeded project's ID and its monitor and deploys integration IDs."""
+    projects = client.get("/v1/projects")["items"]
+    project = next((p for p in projects if p["slug"] == "uppsel-production"), None)
+    if project is None:
+        raise Fail("project uppsel-production not found; was the stack seeded?")
+    integrations = {i["name"]: i["id"] for i in client.get(f"/v1/projects/{project['id']}/integrations")["items"]}
+    if "monitor" not in integrations or "deploys" not in integrations:
+        raise Fail(f"integrations monitor and deploys not found (have {sorted(integrations)})")
+    return project["id"], integrations["monitor"], integrations["deploys"]
+
+
+def wait_for_analysis(client: Client, incident: str, revisions: int = 1) -> dict:
+    """Waits until the incident's analysis has succeeded with at least
+    `revisions` revisions, and returns it."""
+    deadline = time.monotonic() + WAIT_SECONDS
+    while True:
+        analysis = client.get(f"/v1/incidents/{incident}")["analysis"]
+        if analysis["status"] == "succeeded" and analysis["revision_count"] >= revisions:
+            return analysis
+        if analysis["status"] == "failed":
+            raise Fail(f"analysis of {incident} failed: {analysis.get('last_error')}")
+        if time.monotonic() > deadline:
+            raise Fail(f"analysis of {incident} not done after {WAIT_SECONDS}s (status {analysis['status']}, "
+                       f"{analysis['revision_count']} revisions); is the worker running?")
+        time.sleep(0.5)
+
+
 class Demo:
     def __init__(self, client: Client):
         self.c = client
         self.nonce = secrets.token_hex(3)
-        projects = client.get("/v1/projects")["items"]
-        project = next((p for p in projects if p["slug"] == "uppsel-production"), None)
-        if project is None:
-            raise Fail("project uppsel-production not found; was the stack seeded?")
-        integrations = {i["name"]: i["id"] for i in client.get(f"/v1/projects/{project['id']}/integrations")["items"]}
-        if "monitor" not in integrations or "deploys" not in integrations:
-            raise Fail(f"integrations monitor and deploys not found (have {sorted(integrations)})")
-        self.monitor, self.deploys = integrations["monitor"], integrations["deploys"]
+        project_id, self.monitor, self.deploys = locate(client)
+        project = {"id": project_id}
 
         # A component of this run's own, known to both integrations as its slug.
         self.slug = f"demo-{self.nonce}"
@@ -160,17 +182,7 @@ class Demo:
         return res["incident_id"], res["event_id"]
 
     def wait(self, incident: str, revisions: int = 1) -> dict:
-        deadline = time.monotonic() + WAIT_SECONDS
-        while True:
-            analysis = self.c.get(f"/v1/incidents/{incident}")["analysis"]
-            if analysis["status"] == "succeeded" and analysis["revision_count"] >= revisions:
-                return analysis
-            if analysis["status"] == "failed":
-                raise Fail(f"analysis failed: {analysis.get('last_error')}")
-            if time.monotonic() > deadline:
-                raise Fail(f"analysis not done after {WAIT_SECONDS}s (status {analysis['status']}, "
-                           f"{analysis['revision_count']} revisions); is the worker running?")
-            time.sleep(0.5)
+        return wait_for_analysis(self.c, incident, revisions)
 
     def show(self, incident: str, analysis: dict) -> list[dict]:
         timeline = self.c.get(f"/v1/incidents/{incident}/timeline")["items"]
