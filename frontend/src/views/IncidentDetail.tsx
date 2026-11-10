@@ -5,6 +5,7 @@ import { Findings } from "../components/Findings";
 import { Properties } from "../components/Properties";
 import { ResolveDialog } from "../components/ResolveDialog";
 import { StagePills } from "../components/StagePills";
+import { Summary } from "../components/Summary";
 import { Timeline } from "../components/Timeline";
 import { shortId, utcTime } from "../format";
 import type { Incident, Page, Revision, TimelineItem } from "../types";
@@ -225,6 +226,14 @@ export function IncidentDetail({ id }: { id: string }) {
               )}
             </div>
           )}
+
+          <Summary
+            revision={rev}
+            status={incident.analysis.status}
+            step={incident.analysis.step}
+            resolved={resolved}
+            loadingOld={old && !old.revision ? { n: old.n, error: old.error } : null}
+          />
 
           <section className="block" aria-labelledby="findings-h">
             <div className="block-head">

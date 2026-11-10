@@ -45,10 +45,12 @@ func incidentExistsInOrg(ctx context.Context, q database.DBTX, orgID, incidentID
 }
 
 type jobRow struct {
-	Status     string
-	LastError  *string
-	StartedAt  *time.Time
-	FinishedAt *time.Time
+	Status        string
+	LastError     *string
+	StartedAt     *time.Time
+	FinishedAt    *time.Time
+	Step          *string
+	StepStartedAt *time.Time
 }
 
 // newestJob returns the incident's most recent job (created_at DESC, id
@@ -56,10 +58,10 @@ type jobRow struct {
 func newestJob(ctx context.Context, q database.DBTX, incidentID string) (jobRow, error) {
 	var j jobRow
 	err := q.QueryRow(ctx, `
-		SELECT status, last_error, started_at, finished_at FROM analysis_jobs
+		SELECT status, last_error, started_at, finished_at, step, step_started_at FROM analysis_jobs
 		WHERE incident_id = $1
 		ORDER BY created_at DESC, id DESC
-		LIMIT 1`, incidentID).Scan(&j.Status, &j.LastError, &j.StartedAt, &j.FinishedAt)
+		LIMIT 1`, incidentID).Scan(&j.Status, &j.LastError, &j.StartedAt, &j.FinishedAt, &j.Step, &j.StepStartedAt)
 	return j, err
 }
 
@@ -73,6 +75,7 @@ type revisionRow struct {
 	ID             string
 	RevisionNumber int
 	CreatedAt      time.Time
+	Summary        []Segment
 }
 
 // latestRevision returns the incident's highest-numbered revision.
@@ -80,10 +83,10 @@ type revisionRow struct {
 func latestRevision(ctx context.Context, q database.DBTX, incidentID string) (revisionRow, error) {
 	var r revisionRow
 	err := q.QueryRow(ctx, `
-		SELECT id::text, revision_number, created_at FROM analysis_revisions
+		SELECT id::text, revision_number, created_at, summary FROM analysis_revisions
 		WHERE incident_id = $1
 		ORDER BY revision_number DESC
-		LIMIT 1`, incidentID).Scan(&r.ID, &r.RevisionNumber, &r.CreatedAt)
+		LIMIT 1`, incidentID).Scan(&r.ID, &r.RevisionNumber, &r.CreatedAt, &r.Summary)
 	return r, err
 }
 
@@ -92,8 +95,8 @@ func latestRevision(ctx context.Context, q database.DBTX, incidentID string) (re
 func revisionByNumber(ctx context.Context, q database.DBTX, incidentID string, n int) (revisionRow, error) {
 	var r revisionRow
 	err := q.QueryRow(ctx, `
-		SELECT id::text, revision_number, created_at FROM analysis_revisions
-		WHERE incident_id = $1 AND revision_number = $2`, incidentID, n).Scan(&r.ID, &r.RevisionNumber, &r.CreatedAt)
+		SELECT id::text, revision_number, created_at, summary FROM analysis_revisions
+		WHERE incident_id = $1 AND revision_number = $2`, incidentID, n).Scan(&r.ID, &r.RevisionNumber, &r.CreatedAt, &r.Summary)
 	return r, err
 }
 

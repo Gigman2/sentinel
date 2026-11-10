@@ -16,7 +16,10 @@ from dataclasses import dataclass
 import psycopg
 from psycopg import errors
 
+from psycopg.types.json import Jsonb
+
 from sentinel_worker.models import EvidenceEvent, Finding, IncidentContext
+from sentinel_worker.summary import Segment
 
 MAX_ERROR_CHARS = 500
 BACKOFF_BASE_SECONDS = 5
@@ -44,7 +47,9 @@ def lease_job(conn: psycopg.Connection, lease_seconds: int = 60) -> Job | None:
     In one transaction: first fail running jobs whose lease expired on their
     last attempt (their worker died every time), then take one pending job
     that is due, or a running job whose lease expired with attempts left.
-    started_at records the first lease and is kept on later ones.
+    started_at records the first lease and is kept on later ones. Every
+    lease starts the attempt at collect_evidence, so a retry never shows
+    the step its previous attempt reached.
     """
     with conn.transaction():
         conn.execute(
@@ -57,7 +62,8 @@ def lease_job(conn: psycopg.Connection, lease_seconds: int = 60) -> Job | None:
             """UPDATE analysis_jobs
                SET status = 'running', attempts = attempts + 1, lease_token = gen_random_uuid(),
                    lease_expires_at = now() + make_interval(secs => %s),
-                   started_at = COALESCE(started_at, now()), updated_at = now()
+                   started_at = COALESCE(started_at, now()),
+                   step = 'collect_evidence', step_started_at = now(), updated_at = now()
                WHERE id = (
                    SELECT id FROM analysis_jobs
                    WHERE (status = 'pending' AND next_attempt_at <= now())
@@ -91,11 +97,27 @@ def load_context(conn: psycopg.Connection, incident_id: str) -> IncidentContext:
                                    link_reason=r[5], details=r[6] or {}) for r in rows))
 
 
-def write_revision(conn: psycopg.Connection, job: Job, findings: list[Finding], seen: Sequence[str]) -> str | None:
-    """Mark the job succeeded and store its findings as the incident's next
-    revision, with the IDs of the events the analysis read (`seen`), in one
-    transaction. Returns the revision ID, or None if the job's lease was lost
-    (nothing is written)."""
+STEPS = ("collect_evidence", "draft_findings", "save_revision")
+
+
+def set_step(conn: psycopg.Connection, job: Job, step: str) -> bool:
+    """Record that the job entered `step`. Guarded by the lease: returns False
+    (and changes nothing) if the lease was lost."""
+    if step not in STEPS:
+        raise ValueError(f"unknown step {step!r}")
+    cur = conn.execute(
+        """UPDATE analysis_jobs SET step = %s, step_started_at = now(), updated_at = now()
+           WHERE id = %s AND status = 'running' AND lease_token = %s""",
+        (step, job.id, job.lease_token))
+    return cur.rowcount == 1
+
+
+def write_revision(conn: psycopg.Connection, job: Job, findings: list[Finding], seen: Sequence[str],
+                   summary: Sequence[Segment]) -> str | None:
+    """Mark the job succeeded and store its findings and summary as the
+    incident's next revision, with the IDs of the events the analysis read
+    (`seen`), in one transaction. Returns the revision ID, or None if the
+    job's lease was lost (nothing is written)."""
     try:
         with conn.transaction():
             # Serializes revision numbering per incident.
@@ -109,12 +131,12 @@ def write_revision(conn: psycopg.Connection, job: Job, findings: list[Finding], 
             if done.rowcount != 1:
                 raise _LostLease
             row = conn.execute(
-                """INSERT INTO analysis_revisions (incident_id, job_id, revision_number)
-                   SELECT %s, %s, COALESCE(MAX(revision_number), 0) + 1
+                """INSERT INTO analysis_revisions (incident_id, job_id, revision_number, summary)
+                   SELECT %s, %s, COALESCE(MAX(revision_number), 0) + 1, %s
                    FROM analysis_revisions WHERE incident_id = %s
                    ON CONFLICT (job_id) DO NOTHING
                    RETURNING id::text""",
-                (job.incident_id, job.id, job.incident_id)).fetchone()
+                (job.incident_id, job.id, Jsonb(list(summary)), job.incident_id)).fetchone()
             if row is None:
                 # Already written for this job; findings are immutable.
                 return conn.execute("SELECT id::text FROM analysis_revisions WHERE job_id = %s",

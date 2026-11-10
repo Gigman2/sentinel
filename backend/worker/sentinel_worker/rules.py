@@ -25,6 +25,15 @@ def _version(event: EvidenceEvent) -> str:
     return str(event.details.get("version") or "unknown")
 
 
+def opening_trigger(events: list[EvidenceEvent] | tuple[EvidenceEvent, ...]) -> EvidenceEvent | None:
+    """The alert the findings name: the one that opened the incident, or the
+    earliest trigger if none is marked as opening it. The summary uses the
+    same choice so it never quotes a different alert."""
+    ordered = sorted(events, key=lambda e: (e.occurred_at, e.id))
+    triggers = [e for e in ordered if e.link_reason in TRIGGER_REASONS]
+    return next((e for e in triggers if e.link_reason == "trigger"), triggers[0] if triggers else None)
+
+
 def analyze(ctx: IncidentContext) -> list[Finding]:
     """Return the findings for an incident, in a fixed order: observations,
     hypotheses, unknowns, next checks; within a kind, rule order; within a
@@ -36,7 +45,7 @@ def analyze(ctx: IncidentContext) -> list[Finding]:
     triggers = [e for e in events if e.link_reason in TRIGGER_REASONS]
     if not triggers:
         raise ValueError(f"incident {ctx.incident_id} has no trigger event")
-    first_trigger = next((e for e in triggers if e.link_reason == "trigger"), triggers[0])
+    first_trigger = opening_trigger(events)
     deployments = [e for e in events if e.type == "deployment.completed"]
     errors = [e for e in events if e.type == "error.observed"]
 
