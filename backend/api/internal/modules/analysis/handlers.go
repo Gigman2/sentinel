@@ -64,7 +64,8 @@ func (h Handlers) Revision(w http.ResponseWriter, r *http.Request) {
 		writeNotFound(w, r)
 		return
 	}
-	rev, err := h.Service.RevisionByNumber(r.Context(), auth.PrincipalFrom(r.Context()).OrganizationID, id, int(n))
+	p := auth.PrincipalFrom(r.Context())
+	rev, err := h.Service.RevisionByNumber(r.Context(), p.OrganizationID, p.UserID, id, int(n))
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeNotFound(w, r)

@@ -188,8 +188,8 @@ describe("incident detail", () => {
       revision_number: 1,
       created_at: "2026-11-09T14:09:48Z",
       findings: [
-        { kind: "observation", rule_id: "trigger_alert", text: "payment-service alert first fired at 14:09 UTC.", limitations: null, evidence_ids: ["evt-alert"] },
-        { kind: "unknown", rule_id: "no_deployment_evidence", text: "No deployment information is available for payment-service in the investigated window.", limitations: null, evidence_ids: [] },
+        { id: "r1-1", kind: "observation", rule_id: "trigger_alert", text: "payment-service alert first fired at 14:09 UTC.", limitations: null, evidence_ids: ["evt-alert"], feedback: { useful: 0, incorrect: 0, mine: null }, check: null },
+        { id: "r1-2", kind: "unknown", rule_id: "no_deployment_evidence", text: "No deployment information is available for payment-service in the investigated window.", limitations: null, evidence_ids: [], feedback: { useful: 0, incorrect: 0, mine: null }, check: null },
       ],
     };
     const history = {

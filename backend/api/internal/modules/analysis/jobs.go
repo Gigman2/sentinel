@@ -130,20 +130,46 @@ type Segment struct {
 	Kind string `json:"kind"`
 }
 
-// Finding is one statement in a revision, with the events it cites.
+// Finding is one statement in a revision, with the events it cites and
+// what engineers have said about it.
 type Finding struct {
+	ID          string   `json:"id"`
 	Kind        string   `json:"kind"`
 	RuleID      string   `json:"rule_id"`
 	Text        string   `json:"text"`
 	Limitations *string  `json:"limitations"`
 	EvidenceIDs []string `json:"evidence_ids"`
+	Feedback    Feedback `json:"feedback"`
+	// Check is set only for next_check findings.
+	Check *Check `json:"check"`
+}
+
+// Feedback counts engineers' verdicts on a finding. Mine is the viewer's
+// own verdict ("useful", "incorrect") or null.
+type Feedback struct {
+	Useful    int     `json:"useful"`
+	Incorrect int     `json:"incorrect"`
+	Mine      *string `json:"mine"`
+}
+
+// Check is whether a next check has been done, and by whom.
+type Check struct {
+	Done   bool       `json:"done"`
+	DoneBy *User      `json:"done_by"`
+	DoneAt *time.Time `json:"done_at"`
+}
+
+// User names a person in a view.
+type User struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
 }
 
 // Read returns the incident's analysis view. Status and last error come from
 // the newest job; the revision is the highest-numbered one. Callers that
 // show it alongside the incident read both in one snapshot (q is a
-// REPEATABLE READ transaction).
-func Read(ctx context.Context, q database.DBTX, incidentID string) (View, error) {
+// REPEATABLE READ transaction). viewerID decides each finding's "mine".
+func Read(ctx context.Context, q database.DBTX, incidentID, viewerID string) (View, error) {
 	v := View{Status: StatusNone}
 	job, err := newestJob(ctx, q, incidentID)
 	switch {
@@ -165,7 +191,7 @@ func Read(ctx context.Context, q database.DBTX, incidentID string) (View, error)
 	if err != nil {
 		return View{}, fmt.Errorf("read analysis revision: %w", err)
 	}
-	full, err := withFindings(ctx, q, rev)
+	full, err := withFindings(ctx, q, rev, viewerID)
 	if err != nil {
 		return View{}, err
 	}
@@ -173,9 +199,9 @@ func Read(ctx context.Context, q database.DBTX, incidentID string) (View, error)
 	return v, nil
 }
 
-// withFindings loads a revision's findings.
-func withFindings(ctx context.Context, q database.DBTX, rev revisionRow) (Revision, error) {
-	findings, err := revisionFindings(ctx, q, rev.ID)
+// withFindings loads a revision's findings, with viewerID's own feedback.
+func withFindings(ctx context.Context, q database.DBTX, rev revisionRow, viewerID string) (Revision, error) {
+	findings, err := revisionFindings(ctx, q, rev.ID, viewerID)
 	if err != nil {
 		return Revision{}, fmt.Errorf("read findings: %w", err)
 	}

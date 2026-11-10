@@ -318,7 +318,7 @@ PR `feat/p1-14-summary-steps`.
 PR `feat/p1-15-feedback`.
 
 **Files:**
-- Create: `backend/api/migrations/0008_feedback.sql`, `backend/api/internal/modules/feedback/{service.go,store.go,handlers.go}`, `feedback/feedback_test.go`.
+- Create: `backend/api/migrations/0009_feedback.sql`, `backend/api/internal/modules/feedback/{service.go,store.go,handlers.go}`, `feedback/feedback_test.go`.
 - Modify: `analysis/{jobs.go,store.go}` (finding IDs and feedback in the read model), `server` routes, the `archtest` allow-list if needed, frontend `FindingRow.tsx`, `api.ts`.
 - Test: `feedback_test.go`, `Findings.test.tsx`.
 

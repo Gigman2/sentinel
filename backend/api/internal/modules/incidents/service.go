@@ -118,7 +118,7 @@ type Service struct {
 // Get returns an incident visible to orgID, with its analysis, or
 // ErrNotFound. Both are read in one REPEATABLE READ READ ONLY transaction so
 // they come from the same snapshot.
-func (s Service) Get(ctx context.Context, orgID, incidentID string) (Incident, error) {
+func (s Service) Get(ctx context.Context, orgID, viewerID, incidentID string) (Incident, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return Incident{}, err
@@ -132,7 +132,7 @@ func (s Service) Get(ctx context.Context, orgID, incidentID string) (Incident, e
 	if err != nil {
 		return Incident{}, err
 	}
-	view, err := analysis.Read(ctx, tx, incidentID)
+	view, err := analysis.Read(ctx, tx, incidentID, viewerID)
 	if err != nil {
 		return Incident{}, err
 	}
@@ -209,7 +209,7 @@ func (s Service) Resolve(ctx context.Context, orgID, userID, incidentID, note st
 	if err := tx.Commit(ctx); err != nil {
 		return Incident{}, err
 	}
-	return s.Get(ctx, orgID, incidentID)
+	return s.Get(ctx, orgID, userID, incidentID)
 }
 
 // ListItem is one incident in a project listing. AnalysisStatus is derived
