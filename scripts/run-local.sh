@@ -2,6 +2,9 @@
 # Run Sentinel locally: PostgreSQL (Docker), the Go API and the Python worker.
 # Ctrl-C stops the API and the worker; PostgreSQL keeps running (`make down`).
 #
+# After starting, it adds demo incidents to explore (sentinel-api demo-data)
+# unless SEED_DEMO_DATA=0.
+#
 # Settings come from the environment first; a git-ignored .env at the repo
 # root (see .env.example) only fills in variables that are not already set,
 # so `PORT=9090 make run` overrides PORT in .env. To keep the same tokens across runs, set
@@ -58,7 +61,21 @@ pids+=($!)
 
 echo "==> API on http://$HOST:$PORT, worker running. Ctrl-C to stop."
 
-# Stop everything if either process exits on its own.
+# Demo incidents to explore (local only; SEED_DEMO_DATA=0, false, no, off or
+# empty skips them). It
+# waits for the worker between steps; a rerun changes nothing.
+case "$(printf '%s' "${SEED_DEMO_DATA-1}" | tr '[:upper:]' '[:lower:]')" in
+  0 | false | no | off | "") demo_data=0 ;;
+  *) demo_data=1 ;;
+esac
+if [[ $demo_data == 1 ]]; then
+  echo "==> adding demo incidents in the background (SEED_DEMO_DATA=0 to skip)"
+  "$api_bin" demo-data &
+  pids+=($!)
+fi
+
+# Stop everything if the API or the worker exits on its own (demo-data, the
+# third process when present, is expected to finish).
 while kill -0 "${pids[0]}" 2>/dev/null && kill -0 "${pids[1]}" 2>/dev/null; do
   sleep 1
 done

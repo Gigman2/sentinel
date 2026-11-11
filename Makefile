@@ -1,4 +1,4 @@
-.PHONY: db down up reset run demo showcase test test-api test-worker test-frontend test-scripts
+.PHONY: db down up reset run demo test test-api test-worker test-frontend test-scripts
 
 # The database port: the environment, then .env, then 5432 (as Compose does).
 SENTINEL_DB_PORT ?= $(or $(shell sed -n 's/^SENTINEL_DB_PORT=//p' .env 2>/dev/null | tail -1),5432)
@@ -29,10 +29,6 @@ reset:
 ## demo: run the demo scenarios against the running stack
 demo:
 	python3 scripts/demo.py all
-
-## showcase: fill the running stack with varied incidents to explore in the UI
-showcase:
-	python3 scripts/showcase.py
 
 ## run: start PostgreSQL, migrate, seed, then run the API and worker (Ctrl-C stops them)
 run:
